@@ -1,10 +1,21 @@
 # codex-grok-relay
 
-一个只提供单一 MCP 工具的本地 stdio relay：Codex 调用 `grok_delegate`，relay 为每次调用启动独立的 Grok CLI 子进程，并通过 ACP v1 完成认证、创建或加载会话以及一次 prompt。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 构建与接入
+A local stdio MCP relay that lets Codex delegate tasks to the Grok CLI through a single tool, `grok_delegate`. Each call starts an independent Grok child process and uses ACP v1 for authentication, session creation or resumption, and one prompt.
 
-要求 Node.js 22+、pnpm，以及已安装并可完成非交互认证的 Grok CLI。
+The relay handles protocol translation, session metadata, concurrency control for the same working directory, and process cleanup. Codex remains responsible for selecting worktrees, reviewing diffs, running tests, and integrating results.
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 22+
+- pnpm 11+
+- The Grok CLI installed and configured with a non-interactive authentication method
+- A local worktree or other working directory that Grok is allowed to modify
+
+### Install, check, and build
 
 ```bash
 pnpm install
@@ -14,7 +25,7 @@ pnpm test
 pnpm build
 ```
 
-构建产物为 `dist/cli.js`。Codex MCP 配置示例（请使用本机绝对路径）：
+The build output is `dist/cli.js`. Register it as a Codex MCP server using an absolute local path:
 
 ```toml
 [mcp_servers.grok-build]
@@ -24,17 +35,57 @@ startup_timeout_sec = 10
 tool_timeout_sec = 3660
 ```
 
-标准输出只承载 MCP 协议；诊断写入标准错误。`GROK_RELAY_GROK_COMMAND` 可指定 Grok 可执行文件。`GROK_RELAY_STATE_DIR` 可指定 relay 状态目录，默认 `~/.local/state/codex-grok-relay`。测试可直接构造 `RelayConfig` 注入 fake 命令和较短超时；生产环境不能覆盖强制 sandbox 参数。
+`tool_timeout_sec` should cover the relay's default 3600-second total call limit. The relay uses stdout only for MCP protocol traffic and writes diagnostics to stderr.
 
-## 工具契约
+## Basic Usage
 
-`grok_delegate` 输入：
+For the first call, provide a task and working directory:
 
-- `task`：非空字符串。
-- `cwd`：已存在目录的绝对路径；relay 使用 `realpath` 后的路径。
-- `sessionId`：可选，只能使用 relay 先前返回并绑定到同一 `cwd` 的会话。
+```json
+{
+  "task": "Inspect the current changes, run the relevant tests, and summarize any issues.",
+  "cwd": "/absolute/path/to/worktree"
+}
+```
 
-返回的文本内容是以下对象的 JSON，`structuredContent` 是同一个对象：
+Example successful response:
+
+```json
+{
+  "sessionId": "opaque-session-id",
+  "stopReason": "end_turn",
+  "text": "Inspection completed; all tests passed.",
+  "truncated": false
+}
+```
+
+To resume the same Grok session, pass the returned `sessionId` together with the same `cwd`:
+
+```json
+{
+  "task": "Continue by fixing the issues found in the previous turn.",
+  "cwd": "/absolute/path/to/worktree",
+  "sessionId": "opaque-session-id"
+}
+```
+
+Delegated tasks should state the allowed modification scope, acceptance criteria, and checks to run. Independent tasks can run in parallel in different worktrees.
+
+## Tool Contract
+
+The relay registers exactly one MCP tool: `grok_delegate`.
+
+### Input
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `task` | Non-empty string | The task to send to Grok. Leading and trailing whitespace is trimmed. |
+| `cwd` | String | An existing absolute directory. The relay resolves it with `realpath`; state binding and locking use the normalized path. |
+| `sessionId` | Optional string | A session ID previously returned by the relay and bound to the same normalized `cwd`. |
+
+### Output
+
+The text response and `structuredContent` contain the same JSON object:
 
 ```json
 {
@@ -42,30 +93,102 @@ tool_timeout_sec = 3660
   "stopReason": "end_turn-or-null",
   "text": "Grok response",
   "truncated": false,
-  "error": { "code": "OPTIONAL_CODE", "message": "optional message" }
+  "error": {
+    "code": "OPTIONAL_CODE",
+    "message": "optional message"
+  }
 }
 ```
 
-基础设施、认证、状态、锁、ACP 或子进程失败会设置 MCP `isError: true`，并尽量保留已经取得的 `sessionId` 和部分文本。relay 不臆造 `stopReason`，prompt 失败也不会自动重发。文本最多保留 256 KiB，但超限后仍继续读取 ACP 流，并用 `truncated` 标记。
+- `sessionId`: Returned after a session is created; if a failure occurs after an ID is obtained, the relay tries to preserve it.
+- `stopReason`: The stop reason returned by Grok. The relay does not invent one when a prompt fails.
+- `text`: Grok text received so far, capped at 256 KiB.
+- `truncated`: `true` when the text exceeds the limit. The relay continues reading the ACP stream and completes cleanup even after reaching the cap.
+- `error`: A stable error code and human-readable message when the call fails.
 
-新会话在发送 prompt 前保存绑定记录。恢复只读取 relay 元数据并调用 Grok `session/load`；实际对话由 Grok 保存。未知 ID、损坏记录、不同 `cwd`、缺少 load 能力或 load 失败都会明确报错，不会静默新建替代会话。状态记录只包含版本、会话 ID、规范化 cwd 和时间戳，文件名是 ID 的 SHA-256。
+Infrastructure, authentication, state, lock, ACP, or child-process failures also set MCP `isError: true`. If a session ID or partial text has already been obtained, the error response tries to preserve it. Prompt failures are not retried automatically.
 
-同一规范化 cwd 使用跨 relay 进程的排他锁，不同 worktree 可并行。已有锁一律视为活跃，以避免竞争者误删新 owner 的锁；若 relay 被 `SIGKILL` 后留下锁文件，需先确认没有对应 Grok 子进程，再手工删除状态目录 `locks/` 下对应文件。正常完成、取消、超时、断连和父进程信号都会回收子进程并释放锁。
+## Sessions, Concurrency, and Lifecycle
 
-## 认证、权限和边界
+The approximate lifecycle of a call is:
 
-relay 优先使用环境中的 `XAI_API_KEY` 和 Grok 声明的 `xai.api_key`；否则使用 Grok 已缓存的 `cached_token`。两者都不可用时直接失败，不启动交互登录。Grok 命令固定为：
+```text
+Normalize cwd → acquire cwd lock → start Grok → ACP initialize/authenticate
+→ session/new or session/load → session/prompt → reap child and release lock
+```
+
+### Session resumption
+
+- A new session binding is written to relay metadata before the prompt is sent.
+- The relay stores only the version, session ID, normalized `cwd`, and timestamps. The filename is the SHA-256 digest of the session ID, and the file uses private permissions.
+- Grok stores the actual conversation history. To resume, the relay reads its metadata and calls Grok `session/load`.
+- Unknown IDs, corrupt records, a different `cwd`, missing load capability, or load failures return explicit errors; the relay does not silently create a replacement session.
+
+### Concurrency and cleanup
+
+- The same normalized `cwd` uses an exclusive lock shared across relay processes; different worktrees can run in parallel.
+- An existing lock is always treated as active, preventing a competitor from deleting a new owner's lock.
+- Normal completion, cancellation, timeouts, disconnects, and parent-process signals reap the Grok child process and release the lock.
+- If the relay is terminated by `SIGKILL` and leaves a lock behind, first confirm that no corresponding Grok process is running, then manually remove the corresponding file under the state directory's `locks/` directory.
+
+## Configuration
+
+All configuration is provided through environment variables. Tests can construct `RelayConfig` directly to inject a fake command and shorter timeouts; production configuration cannot override the fixed Grok sandbox arguments.
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `GROK_RELAY_GROK_COMMAND` | `grok` | Grok executable path or command name. |
+| `GROK_RELAY_STATE_DIR` | `~/.local/state/codex-grok-relay` | Root directory for session metadata and cwd locks. |
+| `GROK_RELAY_PHASE_TIMEOUT_MS` | `30000` | Per-phase timeout for startup, initialize, authentication, creation, and loading. |
+| `GROK_RELAY_TOTAL_TIMEOUT_MS` | `3600000` | Total timeout for one call, or 3600 seconds. |
+| `GROK_RELAY_CANCEL_GRACE_MS` | `5000` | Time to wait for ACP `session/cancel` and child-process exit during cancellation. |
+| `GROK_RELAY_TERM_GRACE_MS` | `2000` | Time to wait after SIGTERM before escalating to SIGKILL. |
+| `GROK_RELAY_TEXT_LIMIT_BYTES` | `262144` | Maximum Grok text retained for one response. |
+| `GROK_RELAY_STDERR_LIMIT_BYTES` | `65536` | Maximum Grok stderr retained. |
+| `GROK_RELAY_PROGRESS_INTERVAL_MS` | `1000` | Minimum interval between tool-call progress notifications. |
+
+## Authentication, Permissions, and Security Boundaries
+
+### Authentication
+
+The relay never starts interactive login. Authentication is selected in this order:
+
+1. If Grok advertises `xai.api_key` and `XAI_API_KEY` is present in the environment, use the API key.
+2. Otherwise, if Grok advertises `cached_token`, use Grok's cached token.
+3. If neither is available, return an authentication error.
+
+The relay always starts Grok with these arguments:
 
 ```text
 grok --no-auto-update --sandbox workspace agent --always-approve --no-leader stdio
 ```
 
-`workspace` sandbox 可读取主机文件系统，写入范围包括当前 cwd、`~/.grok` 和临时目录，并允许网络访问。这属于 OS 级写入限制，但不提供完整的主机文件读取或网络隔离，也不应把 worktree 当成安全边界。若 sandbox 启动失败，relay 不降级运行。
+### Important boundaries
 
-Codex 仍负责创建或选择 worktree、审查 diff、运行测试及整合结果。relay 不自动创建 worktree，不生成 Git patch 或 `task_id`，不提供多 backend，也不向 Grok 暴露客户端文件或 terminal ACP 能力。若 Grok 意外请求权限，relay 返回 cancelled 并把本次调用标记为错误。
+- The `workspace` sandbox can read the host filesystem, can write to the current `cwd`, `~/.grok`, and temporary directories, and allows network access.
+- This is an OS-level write restriction, not complete host-read or network isolation. A worktree must not be treated as a security boundary.
+- If the sandbox fails to start, the relay does not fall back to running without a sandbox.
+- The relay does not create worktrees, generate Git patches or `task_id` values, provide multiple backends, or expose client-file or terminal ACP capabilities to Grok.
+- Even with `--always-approve`, if Grok unexpectedly requests permission, the relay returns cancelled and marks the call as an error.
 
-委派时应给 Grok 完整任务、允许修改的范围和可验证的验收标准。相互独立的任务可放入不同 worktree 并行执行；完成后由 Codex 检查实际 diff、运行相关测试并完成最终 review。
+Codex should select an appropriate worktree before delegation, then inspect the actual diff, run relevant tests, and complete the final review. Do not decide whether a change is acceptable from Grok's natural-language summary alone.
 
-总调用限时 3600 秒；initialize、认证、新建和加载各 30 秒。取消时先发送 ACP `session/cancel`，最多等待 5 秒，再终止整个子进程组，2 秒后仍未退出则强制杀死。真实集成测试会产生 Grok 调用成本，仅在明确执行 `pnpm test:real` 时运行。
+## Testing and Verification
 
-本实现已通过独立真实 MCP 两轮验收：新建会话后由全新 relay/Grok 进程加载同一会话，恢复仅存在于对话历史的标记，并验证 Grok 内建文件与 shell 工具；workspace 之外的专用目录写入被 sandbox 拒绝。另已通过真实 Codex 宿主临时 MCP 配置的工具发现、调用和同 session 续接验收。Vitest 中的 `real-smoke.test.ts` 仍由环境变量控制，常规 `pnpm test` 会跳过它。
+Standard quality checks:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+git diff --check
+```
+
+Real Grok integration tests incur API call costs, require explicit opt-in, and depend on the Grok CLI, authentication, and available quota:
+
+```bash
+pnpm test:real
+```
+
+Regular `pnpm test` does not run `test/real-smoke.test.ts`. The test suite covers session creation and resumption, authentication selection, state binding, cwd locks, timeouts and cancellation, process-group cleanup, output truncation, progress notifications, and unexpected permission requests.
