@@ -1,0 +1,251 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RelayConfig } from "../src/config.js";
+import { cleanupAllChildren, GrokRunner } from "../src/runner.js";
+import { SessionStore } from "../src/store.js";
+import { RelayFailure } from "../src/types.js";
+
+const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-agent.mjs");
+const backpressureFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "backpressure-agent.mjs");
+const dirs: string[] = [];
+async function tempDir(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), "relay-runner-"));
+  dirs.push(path);
+  return path;
+}
+function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
+  return {
+    command: process.execPath,
+    commandArgs: [fixture],
+    stateDir,
+    phaseTimeoutMs: 2_000,
+    totalTimeoutMs: 5_000,
+    cancelGraceMs: 100,
+    termGraceMs: 100,
+    textLimitBytes: 256 * 1024,
+    stderrLimitBytes: 64 * 1024,
+    progressIntervalMs: 1,
+    ...overrides,
+  };
+}
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+describe("GrokRunner", () => {
+  it("rejects a pre-aborted request before acquiring a lock or spawning", async () => {
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "cancel", cwd }, controller.signal))
+      .rejects.toMatchObject({ code: "CANCELLED" });
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
+  });
+
+  it("creates then resumes a session in a fresh runner and filters load history", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "fake.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const first = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd });
+    expect(first).toEqual({ sessionId: "fake-session-1", stopReason: "end_turn", text: "fresh answer", truncated: false });
+    const second = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "two", cwd, sessionId: first.sessionId as string });
+    expect(second.text).toBe("fresh answer");
+    expect(second.text).not.toContain("OLD HISTORY");
+    const events = await readFile(log, "utf8");
+    expect(events).toContain('"terminal":false');
+    expect(events).toContain("auth:cached_token");
+    expect(events).toContain("new:");
+    expect(events).toContain("load:fake-session-1");
+  });
+
+  it("prefers API-key authentication when present", async () => {
+    vi.stubEnv("XAI_API_KEY", "test-key");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "auth.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd });
+    expect(await readFile(log, "utf8")).toContain("auth:xai.api_key");
+  });
+
+  it("reports missing auth, missing load capability, and load failures without replacement sessions", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    vi.stubEnv("FAKE_ACP_MODE", "no-auth");
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd }))
+      .rejects.toMatchObject({ code: "AUTH_UNAVAILABLE" });
+
+    vi.stubEnv("FAKE_ACP_MODE", "normal");
+    const created = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd });
+    vi.stubEnv("FAKE_ACP_MODE", "no-load");
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "two", cwd, sessionId: created.sessionId as string }))
+      .rejects.toMatchObject({ code: "LOAD_UNSUPPORTED" });
+    vi.stubEnv("FAKE_ACP_MODE", "load-fail");
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "two", cwd, sessionId: created.sessionId as string }))
+      .rejects.toMatchObject({ code: "ACP_FAILURE" });
+  });
+
+  it("preserves partial output, caps text, and reports progress", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "large");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const progress: string[] = [];
+    const result = await new GrokRunner(config(state, { textLimitBytes: 100 }), new SessionStore(state))
+      .delegate({ task: "large", cwd }, undefined, (message) => { progress.push(message); });
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(100);
+    expect(result.truncated).toBe(true);
+    expect(progress).toEqual(["Fake tool"]);
+  });
+
+  it("truncates only on UTF-8 character boundaries", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "unicode");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const result = await new GrokRunner(config(state, { textLimitBytes: 101 }), new SessionStore(state))
+      .delegate({ task: "unicode", cwd });
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(101);
+    expect(result.text).not.toContain("�");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("rejects unknown client requests promptly instead of hanging", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "unknown-request");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "unknown.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const result = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "unknown", cwd });
+    expect(result.stopReason).toBe("end_turn");
+    expect(await readFile(log, "utf8")).toContain("unknown-rejected");
+  });
+
+  it("kills descendants left behind after the Grok leader exits", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "descendant");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "descendant.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "descendant", cwd });
+    const match = /descendant:(\d+)/.exec(await readFile(log, "utf8"));
+    expect(match).not.toBeNull();
+    expect(() => process.kill(Number(match?.[1]), 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+  });
+
+  it("cancels a hung prompt before terminating the child", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "hang");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "cancel.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await expect(new GrokRunner(config(state, { totalTimeoutMs: 150 }), new SessionStore(state)).delegate({ task: "hang", cwd }))
+      .rejects.toMatchObject({ code: "TIMEOUT" });
+    expect(await readFile(log, "utf8")).toContain("cancel:fake-session-1");
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
+  });
+
+  it("bounds cancellation when the ACP stdin write queue is backpressured", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const settings = config(state, {
+      commandArgs: [backpressureFixture],
+      totalTimeoutMs: 100,
+      cancelGraceMs: 100,
+      termGraceMs: 100,
+    });
+    const started = Date.now();
+    await expect(new GrokRunner(settings, new SessionStore(state)).delegate({ task: "x".repeat(2 * 1024 * 1024), cwd }))
+      .rejects.toMatchObject({ code: "TIMEOUT", partial: { sessionId: "backpressure-session" } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
+  });
+
+  it("tracks shutdown before a child reaches the spawn event", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    class SlowStore extends SessionStore {
+      override async acquire(path: string): Promise<() => Promise<void>> {
+        const release = await super.acquire(path);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return release;
+      }
+    }
+    const promise = new GrokRunner(config(state), new SlowStore(state)).delegate({ task: "startup", cwd });
+    const rejected = expect(promise).rejects.toMatchObject({ code: "CANCELLED" });
+    await cleanupAllChildren();
+    await rejected;
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
+  });
+
+  it("surfaces a lock release failure after cleaning the child", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    class BadReleaseStore extends SessionStore {
+      override async acquire(): Promise<() => Promise<void>> {
+        return async () => { throw new RelayFailure("LOCK_IO", "release failed"); };
+      }
+    }
+    await expect(new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "release", cwd }))
+      .rejects.toMatchObject({ code: "LOCK_IO", message: "release failed" });
+  });
+
+  it("does not deadlock global cleanup when lock release fails", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "hang");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "release-cleanup.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    class BadReleaseStore extends SessionStore {
+      override async acquire(): Promise<() => Promise<void>> {
+        return async () => { throw new RelayFailure("LOCK_IO", "release failed during shutdown"); };
+      }
+    }
+    const promise = new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "hang", cwd });
+    const rejected = expect(promise).rejects.toMatchObject({ code: "LOCK_IO", partial: { sessionId: "fake-session-1" } });
+    while (true) {
+      try { if ((await readFile(log, "utf8")).includes("prompt:fake-session-1")) break; } catch { /* wait */ }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await expect(cleanupAllChildren()).resolves.toBeUndefined();
+    await rejected;
+  });
+
+  it.each(["exit", "malformed"])("turns %s child failure into an ACP error", async (mode) => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", mode);
+    const state = await tempDir();
+    const cwd = await tempDir();
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: mode, cwd }))
+      .rejects.toMatchObject({ code: "ACP_FAILURE" });
+  });
+
+  it("rejects an unexpected permission request and keeps the session id", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "permission");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "permission", cwd }))
+      .rejects.toMatchObject({ code: "UNEXPECTED_PERMISSION", partial: { sessionId: "fake-session-1" } });
+  });
+});
