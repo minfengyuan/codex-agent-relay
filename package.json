@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
+    "setup:codex-instructions": "node scripts/append-grok-build-instructions.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:real": "RUN_GROK_REAL_TESTS=1 vitest run test/real-smoke.test.ts"

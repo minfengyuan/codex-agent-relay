@@ -37,6 +37,14 @@ tool_timeout_sec = 3660
 
 `tool_timeout_sec` 应覆盖 relay 默认的 3600 秒总调用上限。relay 的标准输出只承载 MCP 协议，诊断信息写入标准错误。
 
+将推荐的 `grok_delegate` 委派提示词添加到 Codex 全局指令中：
+
+```bash
+pnpm setup:codex-instructions
+```
+
+脚本会更新 `$CODEX_HOME/AGENTS.md`；未设置 `CODEX_HOME` 时则更新 `~/.codex/AGENTS.md`。它会保留其他指令，并且可以重复执行而不会重复插入受管理的提示块。如果同一目录存在非空的 `AGENTS.override.md`，Codex 会改为加载该文件，脚本也会输出警告。
+
 ## 基本用法
 
 首次调用时只需要提供任务和工作目录：

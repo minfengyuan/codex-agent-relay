@@ -37,6 +37,14 @@ tool_timeout_sec = 3660
 
 `tool_timeout_sec` should cover the relay's default 3600-second total call limit. The relay uses stdout only for MCP protocol traffic and writes diagnostics to stderr.
 
+Add the recommended `grok_delegate` delegation guidance to the global Codex instructions:
+
+```bash
+pnpm setup:codex-instructions
+```
+
+The script updates `$CODEX_HOME/AGENTS.md`, or `~/.codex/AGENTS.md` when `CODEX_HOME` is unset. It preserves other instructions and can be run repeatedly without duplicating the managed block. If a non-empty `AGENTS.override.md` exists in the same directory, Codex loads that file instead, and the script prints a warning.
+
 ## Basic Usage
 
 For the first call, provide a task and working directory:
