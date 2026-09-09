@@ -305,7 +305,7 @@ class AcpRunner {
   ) {}
 
   async delegate(input: RunnerInput, signal?: AbortSignal, reportProgress?: ProgressReporter): Promise<RelayResult> {
-    if (process.env.GROK_RELAY_DELEGATED === "1") {
+    if (process.env.CODEX_AGENT_RELAY_DELEGATED === "1") {
       throw new RelayFailure("NESTED_DELEGATION", "Delegation is disabled inside a delegated worker process");
     }
     if (this.adapter.provider === "opencode" && input.resume !== undefined && !input.sessionId) {
@@ -367,7 +367,7 @@ class AcpRunner {
       const metadata = this.adapter.sessionMetadata(input, record);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const invocation = this.adapter.command(input, record);
-      const childEnv = { ...process.env, GROK_RELAY_DELEGATED: "1" };
+      const childEnv = { ...process.env, CODEX_AGENT_RELAY_DELEGATED: "1" };
       child = spawn(invocation.command, invocation.args, {
         cwd,
         env: this.adapter.spawnEnv ? this.adapter.spawnEnv(childEnv) : childEnv,
@@ -410,7 +410,7 @@ class AcpRunner {
         Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
       );
       let lastProgress = 0;
-      let app = acp.client({ name: "codex-grok-relay" })
+      let app = acp.client({ name: "codex-agent-relay" })
         .onRequest(acp.methods.client.session.requestPermission, ({ params }) => {
           if (this.adapter.provider === "opencode") {
             if (params.sessionId !== sessionId || totalAbort.signal.aborted || permissionFailure) {
@@ -551,7 +551,7 @@ class AcpRunner {
         const initialized = await withTimeout(ctx.request(acp.methods.agent.initialize, {
           protocolVersion: 1,
           clientCapabilities: this.adapter.capabilities,
-          clientInfo: { name: "codex-grok-relay", version: "0.1.0" },
+          clientInfo: { name: "codex-agent-relay", version: "0.1.0" },
         }), this.config.phaseTimeoutMs, "INITIALIZE_TIMEOUT", `${this.adapter.displayName} initialize timed out`);
         if (initialized.protocolVersion !== 1) {
           throw new RelayFailure("PROTOCOL_MISMATCH", `${this.adapter.displayName} returned ACP protocol ${initialized.protocolVersion}`);
@@ -757,7 +757,7 @@ function cursorAdapter(config: RelayConfig): ProviderAdapter {
     command(input, record) {
       const command = config.cursorCommand?.trim();
       if (!command) {
-        throw new RelayFailure("CURSOR_COMMAND_REQUIRED", "GROK_RELAY_CURSOR_COMMAND must name the Cursor CLI executable");
+        throw new RelayFailure("CURSOR_COMMAND_REQUIRED", "CODEX_AGENT_RELAY_CURSOR_COMMAND must name the Cursor CLI executable");
       }
       const metadata = this.sessionMetadata(input, record);
       const args = ["--sandbox", "enabled"];

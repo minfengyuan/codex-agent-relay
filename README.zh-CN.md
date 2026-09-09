@@ -1,4 +1,4 @@
-# codex-grok-relay
+# codex-agent-relay
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -28,9 +28,9 @@ pnpm build
 构建产物为 `dist/cli.js`。将它注册为 Codex 的 MCP server 时，请使用本机绝对路径：
 
 ```toml
-[mcp_servers.grok-build]
+[mcp_servers.codex_agent_relay]
 command = "node"
-args = ["/ABSOLUTE/PATH/codex-grok-relay/dist/cli.js"]
+args = ["/ABSOLUTE/PATH/codex-agent-relay/dist/cli.js"]
 startup_timeout_sec = 10
 tool_timeout_sec = 3660
 ```
@@ -40,8 +40,8 @@ tool_timeout_sec = 3660
 启用 Cursor 时，在同一个 MCP server 配置中显式指定其可执行文件：
 
 ```toml
-[mcp_servers.grok-build.env]
-GROK_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
+[mcp_servers.codex_agent_relay.env]
+CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
 请填写实际 Cursor CLI 的路径，不限文件名。不要假定 `agent` 就是 Cursor，Grok 也可能使用该命令名。未配置 Cursor 时仍注册三个工具，仅 Cursor 调用返回配置错误。委派前单独执行 Cursor 的 `login`，或通过 relay 环境提供 `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN`；不要把凭据放入工具参数。
@@ -49,8 +49,8 @@ GROK_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 OpenCode 默认使用 `opencode` 可执行文件。仅在二进制不在 `PATH` 时覆盖：
 
 ```toml
-[mcp_servers.grok-build.env]
-GROK_RELAY_OPENCODE_COMMAND = "/ABSOLUTE/PATH/TO/opencode"
+[mcp_servers.codex_agent_relay.env]
+CODEX_AGENT_RELAY_OPENCODE_COMMAND = "/ABSOLUTE/PATH/TO/opencode"
 ```
 
 委派前用 `opencode auth login` 完成 OpenCode 认证。relay 不会启动登录界面，也不会从工具参数读取凭据。
@@ -61,7 +61,7 @@ GROK_RELAY_OPENCODE_COMMAND = "/ABSOLUTE/PATH/TO/opencode"
 pnpm setup:codex-instructions
 ```
 
-脚本会更新 `$CODEX_HOME/AGENTS.md`；未设置 `CODEX_HOME` 时则更新 `~/.codex/AGENTS.md`。它保留其他指令，将现有 `GROK-BUILD` 受管理块替换为三个 agent 的说明，不会重复插入。如果同一目录存在非空的 `AGENTS.override.md`，Codex 会改为加载该文件，脚本也会输出警告。
+脚本会更新 `$CODEX_HOME/AGENTS.md`；未设置 `CODEX_HOME` 时则更新 `~/.codex/AGENTS.md`。它保留其他指令，将现有 `CODEX-AGENT-RELAY` 受管理块（或旧的 `GROK-BUILD` 块）替换为三个 agent 的说明，不会重复插入。如果同一目录存在非空的 `AGENTS.override.md`，Codex 会改为加载该文件，脚本也会输出警告。
 
 ## 基本用法
 
@@ -150,7 +150,7 @@ Cursor 额外接受 `model?: string` 和 `mode?: "agent" | "ask"`，不开放 Pl
 
 基础设施、认证、状态、锁、ACP 或子进程失败会同时设置 MCP `isError: true`。如果已经取得会话 ID 或部分文本，错误响应会尽量保留这些信息。prompt 失败不会自动重发。
 
-Cursor 结果额外包含 `provider: "cursor"`，以及可选、有界的摘要数组：`toolCalls`、`todos`、`subagents`、`interactions` 和 `images`。这些数组共用独立于文本的预算，取 64 KiB 与 `GROK_RELAY_TEXT_LIMIT_BYTES` 中较大值。达到预算会设置 `summariesTruncated` 和 `truncated`；收集过程不会读取生成的图像文件。权限失败会在 `interactions` 中保留经过截断的请求摘要，必要时移除旧摘要，供调用方审查被拒绝的操作。
+Cursor 结果额外包含 `provider: "cursor"`，以及可选、有界的摘要数组：`toolCalls`、`todos`、`subagents`、`interactions` 和 `images`。这些数组共用独立于文本的预算，取 64 KiB 与 `CODEX_AGENT_RELAY_TEXT_LIMIT_BYTES` 中较大值。达到预算会设置 `summariesTruncated` 和 `truncated`；收集过程不会读取生成的图像文件。权限失败会在 `interactions` 中保留经过截断的请求摘要，必要时移除旧摘要，供调用方审查被拒绝的操作。
 
 OpenCode 结果包含 `provider: "opencode"`、可选 `usage`（`used`、`size` 以及服务端累计的可选 `cost`；relay 不会自行加总），以及可选、有界的 `toolCalls` 数组。`usage` 取当前 prompt 最新一次 `usage_update`；回放和其他会话的更新会被忽略。达到摘要预算会设置 `summariesTruncated` 和 `truncated`。错误结果会尽量保留已取得的这些 provider 字段。
 
@@ -184,17 +184,17 @@ OpenCode 结果包含 `provider: "opencode"`、可选 `usage`（`used`、`size` 
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
-| `GROK_RELAY_GROK_COMMAND` | `grok` | Grok 可执行文件路径或命令名。 |
-| `GROK_RELAY_CURSOR_COMMAND` | 未设置 | 显式指定 Cursor 可执行文件路径或命令名，仅 Cursor 调用需要。 |
-| `GROK_RELAY_OPENCODE_COMMAND` | `opencode` | OpenCode 可执行文件路径或命令名。relay 以 `shell: false` 启动 `opencode acp --cwd <规范化 cwd>`，进程 cwd 与 ACP cwd 相同。 |
-| `GROK_RELAY_STATE_DIR` | `~/.local/state/codex-grok-relay` | 会话元数据和 cwd 锁的根目录。 |
-| `GROK_RELAY_PHASE_TIMEOUT_MS` | `30000` | 启动、initialize、认证、新建和加载阶段的单阶段超时。 |
-| `GROK_RELAY_TOTAL_TIMEOUT_MS` | `3600000` | 单次调用的总超时，即 3600 秒。 |
-| `GROK_RELAY_CANCEL_GRACE_MS` | `5000` | 取消时等待 ACP `session/cancel` 和子进程退出的时间。 |
-| `GROK_RELAY_TERM_GRACE_MS` | `2000` | 发送 SIGTERM 后等待，再升级为 SIGKILL 的时间。 |
-| `GROK_RELAY_TEXT_LIMIT_BYTES` | `262144` | 单次响应保留的 agent 文本上限。 |
-| `GROK_RELAY_STDERR_LIMIT_BYTES` | `65536` | 保留的 agent stderr 上限。 |
-| `GROK_RELAY_PROGRESS_INTERVAL_MS` | `1000` | 工具调用进度通知的最小间隔。 |
+| `CODEX_AGENT_RELAY_GROK_COMMAND` | `grok` | Grok 可执行文件路径或命令名。 |
+| `CODEX_AGENT_RELAY_CURSOR_COMMAND` | 未设置 | 显式指定 Cursor 可执行文件路径或命令名，仅 Cursor 调用需要。 |
+| `CODEX_AGENT_RELAY_OPENCODE_COMMAND` | `opencode` | OpenCode 可执行文件路径或命令名。relay 以 `shell: false` 启动 `opencode acp --cwd <规范化 cwd>`，进程 cwd 与 ACP cwd 相同。 |
+| `CODEX_AGENT_RELAY_STATE_DIR` | `~/.local/codex-agent-relay` | 会话元数据和 cwd 锁的根目录。 |
+| `CODEX_AGENT_RELAY_PHASE_TIMEOUT_MS` | `30000` | 启动、initialize、认证、新建和加载阶段的单阶段超时。 |
+| `CODEX_AGENT_RELAY_TOTAL_TIMEOUT_MS` | `3600000` | 单次调用的总超时，即 3600 秒。 |
+| `CODEX_AGENT_RELAY_CANCEL_GRACE_MS` | `5000` | 取消时等待 ACP `session/cancel` 和子进程退出的时间。 |
+| `CODEX_AGENT_RELAY_TERM_GRACE_MS` | `2000` | 发送 SIGTERM 后等待，再升级为 SIGKILL 的时间。 |
+| `CODEX_AGENT_RELAY_TEXT_LIMIT_BYTES` | `262144` | 单次响应保留的 agent 文本上限。 |
+| `CODEX_AGENT_RELAY_STDERR_LIMIT_BYTES` | `65536` | 保留的 agent stderr 上限。 |
+| `CODEX_AGENT_RELAY_PROGRESS_INTERVAL_MS` | `1000` | 工具调用进度通知的最小间隔。 |
 
 ## 认证、权限与安全边界
 
@@ -256,7 +256,7 @@ OpenCode 以 `opencode acp --cwd <规范化 cwd>` 启动，进程 cwd 与该路�
 
 ### 防止递归委派
 
-不要把本 relay 配置为下游 Cursor、Grok 或 OpenCode 的 MCP server。特别是 Cursor 会读取项目和用户 `.cursor/mcp.json`；ACP 的空 `mcpServers` 列表并不禁用这些配置。OpenCode 同样会保留原生项目 MCP。worker 会继承内部标记 `GROK_RELAY_DELEGATED=1`，在该标记环境下调用 relay 会被拒绝。这只是基于环境继承的循环保护，不是隔离机制；清除标记的包装脚本会使保护失效。
+不要把本 relay 配置为下游 Cursor、Grok 或 OpenCode 的 MCP server。特别是 Cursor 会读取项目和用户 `.cursor/mcp.json`；ACP 的空 `mcpServers` 列表并不禁用这些配置。OpenCode 同样会保留原生项目 MCP。worker 会继承内部标记 `CODEX_AGENT_RELAY_DELEGATED=1`，在该标记环境下调用 relay 会被拒绝。这只是基于环境继承的循环保护，不是隔离机制；清除标记的包装脚本会使保护失效。
 
 ## 测试与验证
 
@@ -276,7 +276,7 @@ git diff --check
 pnpm test:real
 ```
 
-Cursor 真实测试单独 opt-in，需要配置 `GROK_RELAY_CURSOR_COMMAND`、认证和可用配额：
+Cursor 真实测试单独 opt-in，需要配置 `CODEX_AGENT_RELAY_CURSOR_COMMAND`、认证和可用配额：
 
 ```bash
 pnpm test:real:cursor

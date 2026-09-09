@@ -22,7 +22,7 @@ if (mode === "malformed") {
       log(`initialize:${JSON.stringify(ctx.params.clientCapabilities)}`);
       log(`argv:${JSON.stringify(process.argv.slice(1))}`);
       log(`process-cwd:${process.cwd()}`);
-      log(`delegated:${process.env.GROK_RELAY_DELEGATED ?? ""}`);
+      log(`delegated:${process.env.CODEX_AGENT_RELAY_DELEGATED ?? ""}`);
       log(`permission-env:${process.env.OPENCODE_PERMISSION ?? ""}`);
       const loadSession = mode !== "no-load" && mode !== "no-load-no-resume";
       const resume = mode !== "no-resume" && mode !== "no-load-no-resume";

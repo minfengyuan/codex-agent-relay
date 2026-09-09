@@ -65,6 +65,20 @@ describe("GrokRunner", () => {
     expect(events).toContain("auth:cached_token");
     expect(events).toContain("new:");
     expect(events).toContain("load:fake-session-1");
+    expect(events).toContain('"name":"codex-agent-relay"');
+    expect(events).toContain("delegated:1");
+  });
+
+  it("rejects nested delegation and ignores the old loop-guard key", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    vi.stubEnv("GROK_RELAY_DELEGATED", "1");
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd }))
+      .resolves.toMatchObject({ sessionId: "fake-session-1" });
+    vi.stubEnv("CODEX_AGENT_RELAY_DELEGATED", "1");
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "one", cwd }))
+      .rejects.toMatchObject({ code: "NESTED_DELEGATION" });
   });
 
   it("prefers API-key authentication when present", async () => {
@@ -152,7 +166,7 @@ describe("GrokRunner", () => {
     const cwd = await tempDir();
     const log = join(state, "cancel.log");
     vi.stubEnv("FAKE_ACP_LOG", log);
-    await expect(new GrokRunner(config(state, { totalTimeoutMs: 150 }), new SessionStore(state)).delegate({ task: "hang", cwd }))
+    await expect(new GrokRunner(config(state, { totalTimeoutMs: 1_000 }), new SessionStore(state)).delegate({ task: "hang", cwd }))
       .rejects.toMatchObject({ code: "TIMEOUT" });
     expect(await readFile(log, "utf8")).toContain("cancel:fake-session-1");
     const release = await new SessionStore(state).acquire(cwd);

@@ -102,7 +102,7 @@ function toolResult(result: RelayResult, isError = false) {
 
 export function createRelayServer(config: RelayConfig): McpServer {
   const server = new McpServer(
-    { name: "codex-grok-relay", version: "0.1.0" },
+    { name: "codex-agent-relay", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
   const runner = new GrokRunner(config, new SessionStore(config.stateDir));

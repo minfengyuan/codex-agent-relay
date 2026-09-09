@@ -6,14 +6,14 @@ import { createRelayServer } from "./server.js";
 
 const config = loadConfig();
 const handle = serveStdio(() => createRelayServer(config), {
-  onerror: (error) => console.error(`[codex-grok-relay] ${error.message}`),
+  onerror: (error) => console.error(`[codex-agent-relay] ${error.message}`),
 });
 
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.error(`[codex-grok-relay] received ${signal}; cleaning up`);
+  console.error(`[codex-agent-relay] received ${signal}; cleaning up`);
   process.stdin.pause();
   await handle.close();
   await cleanupAllChildren();

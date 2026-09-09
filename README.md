@@ -1,4 +1,4 @@
-# codex-grok-relay
+# codex-agent-relay
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -28,9 +28,9 @@ pnpm build
 The build output is `dist/cli.js`. Register it as a Codex MCP server using an absolute local path:
 
 ```toml
-[mcp_servers.grok-build]
+[mcp_servers.codex_agent_relay]
 command = "node"
-args = ["/ABSOLUTE/PATH/codex-grok-relay/dist/cli.js"]
+args = ["/ABSOLUTE/PATH/codex-agent-relay/dist/cli.js"]
 startup_timeout_sec = 10
 tool_timeout_sec = 3660
 ```
@@ -40,8 +40,8 @@ tool_timeout_sec = 3660
 To enable Cursor, add its executable explicitly to the same MCP server configuration:
 
 ```toml
-[mcp_servers.grok-build.env]
-GROK_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
+[mcp_servers.codex_agent_relay.env]
+CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
 Use the actual Cursor CLI executable, regardless of its filename. Do not assume `agent` is Cursor: Grok installations may use the same command name. All three tools are registered even when Cursor is not configured; only Cursor calls then fail with a configuration error. Run Cursor's `login` command separately before delegation, or provide `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` through the relay environment. Never put credentials in tool arguments.
@@ -49,8 +49,8 @@ Use the actual Cursor CLI executable, regardless of its filename. Do not assume 
 OpenCode defaults to the `opencode` executable. Override it only when the binary is not on `PATH`:
 
 ```toml
-[mcp_servers.grok-build.env]
-GROK_RELAY_OPENCODE_COMMAND = "/ABSOLUTE/PATH/TO/opencode"
+[mcp_servers.codex_agent_relay.env]
+CODEX_AGENT_RELAY_OPENCODE_COMMAND = "/ABSOLUTE/PATH/TO/opencode"
 ```
 
 Authenticate OpenCode with `opencode auth login` before delegation. The relay never starts a login UI or reads credentials from tool arguments.
@@ -61,7 +61,7 @@ Optionally add the recommended delegation guidance for all three tools to the gl
 pnpm setup:codex-instructions
 ```
 
-The script updates `$CODEX_HOME/AGENTS.md`, or `~/.codex/AGENTS.md` when `CODEX_HOME` is unset. It preserves other instructions and replaces the existing `GROK-BUILD` managed block with guidance for all three agents, without duplication. If a non-empty `AGENTS.override.md` exists in the same directory, Codex loads that file instead, and the script prints a warning.
+The script updates `$CODEX_HOME/AGENTS.md`, or `~/.codex/AGENTS.md` when `CODEX_HOME` is unset. It preserves other instructions and replaces the existing `CODEX-AGENT-RELAY` managed block, or an older `GROK-BUILD` block, with guidance for all three agents, without duplication. If a non-empty `AGENTS.override.md` exists in the same directory, Codex loads that file instead, and the script prints a warning.
 
 ## Basic Usage
 
@@ -150,7 +150,7 @@ The text response and `structuredContent` contain the same JSON object:
 
 Infrastructure, authentication, state, lock, ACP, or child-process failures also set MCP `isError: true`. If a session ID or partial text has already been obtained, the error response tries to preserve it. Prompt failures are not retried automatically.
 
-Cursor results additionally include `provider: "cursor"` and optional bounded arrays: `toolCalls`, `todos`, `subagents`, `interactions`, and `images`. Their shared budget is the greater of 64 KiB and `GROK_RELAY_TEXT_LIMIT_BYTES`, separate from the text budget. Reaching it sets `summariesTruncated` and `truncated`; collection never reads generated image files. Permission failures retain a clipped request summary in `interactions`, evicting older summaries when necessary, so the caller can review what was rejected.
+Cursor results additionally include `provider: "cursor"` and optional bounded arrays: `toolCalls`, `todos`, `subagents`, `interactions`, and `images`. Their shared budget is the greater of 64 KiB and `CODEX_AGENT_RELAY_TEXT_LIMIT_BYTES`, separate from the text budget. Reaching it sets `summariesTruncated` and `truncated`; collection never reads generated image files. Permission failures retain a clipped request summary in `interactions`, evicting older summaries when necessary, so the caller can review what was rejected.
 
 OpenCode results include `provider: "opencode"`, optional `usage` (`used`, `size`, and optional cumulative `cost` from the server; the relay never sums cost), and an optional bounded `toolCalls` array. Usage is the latest `usage_update` for the current prompt; replay and other-session updates are ignored. Reaching the summary budget sets `summariesTruncated` and `truncated`. Error results preserve these provider fields when they are already available.
 
@@ -184,17 +184,17 @@ All configuration is provided through environment variables. Tests can construct
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GROK_RELAY_GROK_COMMAND` | `grok` | Grok executable path or command name. |
-| `GROK_RELAY_CURSOR_COMMAND` | Unset | Explicit Cursor executable path or command name; required only for Cursor calls. |
-| `GROK_RELAY_OPENCODE_COMMAND` | `opencode` | OpenCode executable path or command name. The relay spawns `opencode acp --cwd <canonical-cwd>` with `shell: false` and the same process cwd. |
-| `GROK_RELAY_STATE_DIR` | `~/.local/state/codex-grok-relay` | Root directory for session metadata and cwd locks. |
-| `GROK_RELAY_PHASE_TIMEOUT_MS` | `30000` | Per-phase timeout for startup, initialize, authentication, creation, and loading. |
-| `GROK_RELAY_TOTAL_TIMEOUT_MS` | `3600000` | Total timeout for one call, or 3600 seconds. |
-| `GROK_RELAY_CANCEL_GRACE_MS` | `5000` | Time to wait for ACP `session/cancel` and child-process exit during cancellation. |
-| `GROK_RELAY_TERM_GRACE_MS` | `2000` | Time to wait after SIGTERM before escalating to SIGKILL. |
-| `GROK_RELAY_TEXT_LIMIT_BYTES` | `262144` | Maximum agent text retained for one response. |
-| `GROK_RELAY_STDERR_LIMIT_BYTES` | `65536` | Maximum agent stderr retained. |
-| `GROK_RELAY_PROGRESS_INTERVAL_MS` | `1000` | Minimum interval between tool-call progress notifications. |
+| `CODEX_AGENT_RELAY_GROK_COMMAND` | `grok` | Grok executable path or command name. |
+| `CODEX_AGENT_RELAY_CURSOR_COMMAND` | Unset | Explicit Cursor executable path or command name; required only for Cursor calls. |
+| `CODEX_AGENT_RELAY_OPENCODE_COMMAND` | `opencode` | OpenCode executable path or command name. The relay spawns `opencode acp --cwd <canonical-cwd>` with `shell: false` and the same process cwd. |
+| `CODEX_AGENT_RELAY_STATE_DIR` | `~/.local/codex-agent-relay` | Root directory for session metadata and cwd locks. |
+| `CODEX_AGENT_RELAY_PHASE_TIMEOUT_MS` | `30000` | Per-phase timeout for startup, initialize, authentication, creation, and loading. |
+| `CODEX_AGENT_RELAY_TOTAL_TIMEOUT_MS` | `3600000` | Total timeout for one call, or 3600 seconds. |
+| `CODEX_AGENT_RELAY_CANCEL_GRACE_MS` | `5000` | Time to wait for ACP `session/cancel` and child-process exit during cancellation. |
+| `CODEX_AGENT_RELAY_TERM_GRACE_MS` | `2000` | Time to wait after SIGTERM before escalating to SIGKILL. |
+| `CODEX_AGENT_RELAY_TEXT_LIMIT_BYTES` | `262144` | Maximum agent text retained for one response. |
+| `CODEX_AGENT_RELAY_STDERR_LIMIT_BYTES` | `65536` | Maximum agent stderr retained. |
+| `CODEX_AGENT_RELAY_PROGRESS_INTERVAL_MS` | `1000` | Minimum interval between tool-call progress notifications. |
 
 ## Authentication, Permissions, and Security Boundaries
 
@@ -256,7 +256,7 @@ Optional `model`, `effort`, and `agent` values are validated against the latest 
 
 ### Prevent recursive delegation
 
-Do not configure this relay as an MCP server for downstream Cursor, Grok, or OpenCode agents. In particular, Cursor can load project and user `.cursor/mcp.json`; an empty ACP `mcpServers` list does not disable those configurations. OpenCode likewise keeps native project MCP servers. Workers inherit the internal `GROK_RELAY_DELEGATED=1` marker, and relay calls made under that marker are rejected. This is an inherited-environment loop guard, not an isolation mechanism; wrappers that remove the marker defeat it.
+Do not configure this relay as an MCP server for downstream Cursor, Grok, or OpenCode agents. In particular, Cursor can load project and user `.cursor/mcp.json`; an empty ACP `mcpServers` list does not disable those configurations. OpenCode likewise keeps native project MCP servers. Workers inherit the internal `CODEX_AGENT_RELAY_DELEGATED=1` marker, and relay calls made under that marker are rejected. This is an inherited-environment loop guard, not an isolation mechanism; wrappers that remove the marker defeat it.
 
 ## Testing and Verification
 
@@ -276,7 +276,7 @@ Real Grok integration tests incur API call costs, require explicit opt-in, and d
 pnpm test:real
 ```
 
-Cursor real tests are separately opt-in and require `GROK_RELAY_CURSOR_COMMAND`, authentication, and quota:
+Cursor real tests are separately opt-in and require `CODEX_AGENT_RELAY_CURSOR_COMMAND`, authentication, and quota:
 
 ```bash
 pnpm test:real:cursor

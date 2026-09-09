@@ -25,18 +25,19 @@ async function harness() {
     await clientTransport.send({ jsonrpc: "2.0", id, method, params });
     return answer;
   };
-  await request(1, "initialize", {
+  const init = await request(1, "initialize", {
     protocolVersion: "2025-11-25",
     capabilities: {},
     clientInfo: { name: "test", version: "1" },
   });
   await clientTransport.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  return { server, clientTransport, request };
+  return { server, clientTransport, request, init };
 }
 
 describe("MCP server", () => {
   it("discovers Grok, Cursor, and OpenCode delegation with their input contracts", async () => {
-    const { server, clientTransport, request } = await harness();
+    const { server, clientTransport, request, init } = await harness();
+    expect(init).toHaveProperty("result.serverInfo.name", "codex-agent-relay");
     const response = await request(2, "tools/list");
     expect(response).toHaveProperty("result.tools.0.name", "grok_delegate");
     expect(response).toHaveProperty("result.tools.0.inputSchema.required", ["task", "cwd"]);

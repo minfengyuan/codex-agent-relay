@@ -1,10 +1,10 @@
 {
-  "name": "codex-grok-relay",
+  "name": "codex-agent-relay",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "codex-grok-relay": "dist/cli.js"
+    "codex-agent-relay": "dist/cli.js"
   },
   "files": [
     "dist"
@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
-    "setup:codex-instructions": "node scripts/append-grok-build-instructions.mjs",
+    "setup:codex-instructions": "node scripts/append-codex-agent-relay-instructions.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:real": "RUN_GROK_REAL_TESTS=1 vitest run test/real-smoke.test.ts",

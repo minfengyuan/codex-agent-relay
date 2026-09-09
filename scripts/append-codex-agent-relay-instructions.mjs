@@ -5,14 +5,16 @@ import { join, resolve } from "node:path";
 import { env } from "node:process";
 import { log, warn } from "node:console";
 
-const START_MARKER = "<!-- GROK-BUILD_START -->";
-const END_MARKER = "<!-- GROK-BUILD_END -->";
-const INSTRUCTIONS = `<!-- GROK-BUILD_START -->
+const START_MARKER = "<!-- CODEX-AGENT-RELAY_START -->";
+const END_MARKER = "<!-- CODEX-AGENT-RELAY_END -->";
+const LEGACY_START_MARKER = "<!-- GROK-BUILD_START -->";
+const LEGACY_END_MARKER = "<!-- GROK-BUILD_END -->";
+const INSTRUCTIONS = `<!-- CODEX-AGENT-RELAY_START -->
 ## External coding agents
 
 Codex owns planning, delegation, review, and integration. External agents execute bounded tasks in the supplied workspace/worktree.
 
-- Use \`grok_delegate\` for self-contained implementation work or an explicit Grok Build request.
+- Use \`grok_delegate\` for self-contained implementation work or an explicit Grok delegation request.
 - Use \`cursor_delegate\` for Cursor implementation tasks or focused analysis in \`ask\` mode; an optional \`model\` selects the startup model.
 - Use \`opencode_delegate\` for OpenCode implementation work. Optional \`model\`, \`effort\`, and \`agent\` change the live session configuration; omitted fields keep OpenCode's restored or default state.
 
@@ -26,25 +28,38 @@ When delegating:
 - OpenCode auto-selects the request's \`allow_once\` permission option. On PERMISSION_REQUIRED, \`allow_once\` was missing; review the failure and do not treat a retry as extra approval.
 - OpenCode's child \`question: deny\` overlay can be overridden by agent-specific rules. The worker is noninteractive and will time out if it waits for a user; this is not hard isolation.
 - Keep this relay out of downstream agents' MCP configuration to avoid recursive delegation.
-<!-- GROK-BUILD_END -->`;
+<!-- CODEX-AGENT-RELAY_END -->`;
 
-function applyInstructions(content) {
-  const start = content.indexOf(START_MARKER);
-  const end = content.indexOf(END_MARKER);
+function locateBlock(content, startMarker, endMarker) {
+  const start = content.indexOf(startMarker);
+  const end = content.indexOf(endMarker);
 
   if ((start === -1) !== (end === -1) || (start !== -1 && end < start)) {
-    throw new Error(`Cannot update AGENTS.md: found an incomplete or misordered ${START_MARKER} block`);
+    throw new Error(`Cannot update AGENTS.md: found an incomplete or misordered ${startMarker} block`);
   }
 
-  if (start !== -1) {
-    const duplicateStart = content.indexOf(START_MARKER, start + START_MARKER.length);
-    const duplicateEnd = content.indexOf(END_MARKER, end + END_MARKER.length);
-    if (duplicateStart !== -1 || duplicateEnd !== -1) {
-      throw new Error(`Cannot update AGENTS.md: found multiple ${START_MARKER} blocks`);
-    }
+  if (start === -1) return null;
 
-    const blockEnd = end + END_MARKER.length;
-    return `${content.slice(0, start)}${INSTRUCTIONS}${content.slice(blockEnd)}`;
+  const duplicateStart = content.indexOf(startMarker, start + startMarker.length);
+  const duplicateEnd = content.indexOf(endMarker, end + endMarker.length);
+  if (duplicateStart !== -1 || duplicateEnd !== -1) {
+    throw new Error(`Cannot update AGENTS.md: found multiple ${startMarker} blocks`);
+  }
+
+  return { start, end: end + endMarker.length };
+}
+
+function applyInstructions(content) {
+  const current = locateBlock(content, START_MARKER, END_MARKER);
+  const legacy = locateBlock(content, LEGACY_START_MARKER, LEGACY_END_MARKER);
+
+  if (current && legacy) {
+    throw new Error(`Cannot update AGENTS.md: found multiple ${START_MARKER} blocks`);
+  }
+
+  const block = current ?? legacy;
+  if (block) {
+    return `${content.slice(0, block.start)}${INSTRUCTIONS}${content.slice(block.end)}`;
   }
 
   const separator = content.length === 0 ? "" : content.endsWith("\n\n") ? "" : content.endsWith("\n") ? "\n" : "\n\n";
