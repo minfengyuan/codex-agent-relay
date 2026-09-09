@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { RelayConfig } from "./config.js";
 import { SessionStore, resolveCwd } from "./store.js";
-import { CursorRunner, GrokRunner, type ProgressReporter } from "./runner.js";
+import { CursorRunner, GrokRunner, OpenCodeRunner, type ProgressReporter } from "./runner.js";
 import { RelayFailure, type RelayResult } from "./types.js";
 
 const grokInputSchema = z.object({
@@ -17,6 +17,16 @@ const cursorInputSchema = z.object({
   sessionId: z.string().min(1).optional().describe("Previously returned Cursor session ID"),
   model: z.string().trim().min(1).optional().describe("Cursor model for a new session"),
   mode: z.enum(["agent", "ask"]).optional().describe("Cursor mode for a new session; defaults to agent"),
+});
+
+const openCodeInputSchema = z.object({
+  task: z.string().trim().min(1).describe("Task for OpenCode"),
+  cwd: z.string().trim().min(1).describe("Existing absolute working directory"),
+  sessionId: z.string().trim().min(1).optional().describe("Previously returned OpenCode session ID"),
+  resume: z.boolean().optional().describe("Resume the OpenCode session; defaults to true when sessionId is set"),
+  model: z.string().trim().min(1).optional().describe("OpenCode model session option"),
+  effort: z.string().trim().min(1).optional().describe("OpenCode effort session option"),
+  agent: z.string().trim().min(1).optional().describe("OpenCode agent; mapped to the mode session option"),
 });
 
 const errorSchema = z.object({ code: z.string(), message: z.string() });
@@ -64,6 +74,24 @@ const cursorOutputSchema = outputSchema.extend({
   summariesTruncated: z.boolean().optional(),
 });
 
+const openCodeOutputSchema = outputSchema.extend({
+  provider: z.literal("opencode"),
+  usage: z.object({
+    used: z.number(),
+    size: z.number(),
+    cost: z.object({
+      amount: z.number(),
+      currency: z.string(),
+    }).optional(),
+  }).optional(),
+  toolCalls: z.array(z.object({
+    toolCallId: z.string(),
+    title: z.string().optional(),
+    status: z.string().optional(),
+  })).optional(),
+  summariesTruncated: z.boolean().optional(),
+});
+
 function toolResult(result: RelayResult, isError = false) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -79,6 +107,7 @@ export function createRelayServer(config: RelayConfig): McpServer {
   );
   const runner = new GrokRunner(config, new SessionStore(config.stateDir));
   const cursorRunner = new CursorRunner(config, new SessionStore(config.stateDir, "cursor"));
+  const openCodeRunner = new OpenCodeRunner(config, new SessionStore(config.stateDir, "opencode"));
 
   const progressReporter = (ctx: { mcpReq: { _meta?: unknown; notify: (notification: {
     method: "notifications/progress";
@@ -156,6 +185,43 @@ export function createRelayServer(config: RelayConfig): McpServer {
         ...(failure.partial?.subagents ? { subagents: failure.partial.subagents } : {}),
         ...(failure.partial?.interactions ? { interactions: failure.partial.interactions } : {}),
         ...(failure.partial?.images ? { images: failure.partial.images } : {}),
+        ...(failure.partial?.summariesTruncated ? { summariesTruncated: true } : {}),
+        error: { code: failure.code, message: failure.message },
+      };
+      return toolResult(result, true);
+    }
+  });
+
+  server.registerTool("opencode_delegate", {
+    title: "Delegate a task to OpenCode",
+    description: "Runs one OpenCode ACP prompt in the requested working directory and optionally resumes or loads a saved OpenCode session.",
+    inputSchema: openCodeInputSchema,
+    outputSchema: openCodeOutputSchema,
+  }, async (input, ctx) => {
+    try {
+      const cwd = await resolveCwd(input.cwd);
+      const result = await openCodeRunner.delegate({
+        task: input.task,
+        cwd,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        ...(input.resume === undefined ? {} : { resume: input.resume }),
+        ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.agent === undefined ? {} : { agent: input.agent }),
+      }, ctx.mcpReq.signal, progressReporter(ctx));
+      return toolResult(result);
+    } catch (error) {
+      const failure = error instanceof RelayFailure
+        ? error
+        : new RelayFailure("INTERNAL", error instanceof Error ? error.message : String(error));
+      const result: RelayResult = {
+        sessionId: failure.partial?.sessionId ?? input.sessionId ?? null,
+        stopReason: failure.partial?.stopReason ?? null,
+        text: failure.partial?.text ?? "",
+        truncated: failure.partial?.truncated ?? false,
+        provider: "opencode",
+        ...(failure.partial?.toolCalls ? { toolCalls: failure.partial.toolCalls } : {}),
+        ...(failure.partial?.usage ? { usage: failure.partial.usage } : {}),
         ...(failure.partial?.summariesTruncated ? { summariesTruncated: true } : {}),
         error: { code: failure.code, message: failure.message },
       };

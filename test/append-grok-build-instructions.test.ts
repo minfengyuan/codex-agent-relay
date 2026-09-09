@@ -39,7 +39,9 @@ describe("append-grok-build-instructions", () => {
     expect(first).toContain("## External coding agents");
     expect(first).toContain("`grok_delegate`");
     expect(first).toContain("`cursor_delegate`");
+    expect(first).toContain("`opencode_delegate`");
     expect(first).toContain("PERMISSION_REQUIRED");
+    expect(first).toContain("allow_once");
     expect(first.match(new RegExp(startMarker, "g"))).toHaveLength(1);
     expect(second).toBe(first);
   });

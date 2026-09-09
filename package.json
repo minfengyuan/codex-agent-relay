@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:real": "RUN_GROK_REAL_TESTS=1 vitest run test/real-smoke.test.ts",
-    "test:real:cursor": "RUN_CURSOR_REAL_TESTS=1 vitest run test/cursor-real-smoke.test.ts"
+    "test:real:cursor": "RUN_CURSOR_REAL_TESTS=1 vitest run test/cursor-real-smoke.test.ts",
+    "test:real:opencode": "RUN_OPENCODE_REAL_TESTS=1 vitest run test/opencode-real-smoke.test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

@@ -11,16 +11,19 @@ import {
   type DelegateInput,
   type ImageSummary,
   type InteractionSummary,
+  type OpenCodeDelegateInput,
   type RelayResult,
   type SubagentSummary,
   type TodoSummary,
   type ToolCallSummary,
+  type UsageSummary,
 } from "./types.js";
 
 export type ProgressReporter = (message: string) => Promise<void> | void;
 
-type RunnerInput = CursorDelegateInput;
-type Provider = "grok" | "cursor";
+type RunnerInput = CursorDelegateInput & OpenCodeDelegateInput;
+type Provider = "grok" | "cursor" | "opencode";
+type ExistingSessionAction = "resume" | "load";
 type ActiveChild = { child: ChildProcessWithoutNullStreams; sessionId: string | null; cancel: () => Promise<void> };
 type ActiveTask = { cancel: () => Promise<void>; settled: Promise<void>; resolveSettled: () => void };
 
@@ -28,10 +31,19 @@ type ProviderAdapter = {
   provider: Provider;
   displayName: string;
   command(input: RunnerInput, record?: SessionRecord): { command: string; args: string[] };
-  authenticate(initialized: acp.InitializeResponse): string;
+  authenticate(initialized: acp.InitializeResponse): string | undefined;
   capabilities: acp.ClientCapabilities;
   prompt(task: string): string;
   sessionMetadata(input: RunnerInput, record?: SessionRecord): Pick<SessionRecord, "model" | "mode">;
+  spawnEnv?(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+  existingSession?(initialized: acp.InitializeResponse, input: RunnerInput): ExistingSessionAction;
+  configureSession?(
+    ctx: acp.ClientContext,
+    sessionId: string,
+    input: RunnerInput,
+    configOptions: readonly acp.SessionConfigOption[] | null | undefined,
+    signal?: AbortSignal,
+  ): Promise<void>;
 };
 
 const activeTasks = new Set<ActiveTask>();
@@ -113,6 +125,58 @@ function appendLimited(current: string, chunk: string, limit: number): { value: 
 function hasLoadCapability(capabilities: unknown): boolean {
   return Boolean(capabilities && typeof capabilities === "object"
     && (capabilities as { loadSession?: unknown }).loadSession === true);
+}
+
+function hasResumeCapability(capabilities: unknown): boolean {
+  if (!capabilities || typeof capabilities !== "object") return false;
+  const resume = (capabilities as {
+    sessionCapabilities?: { resume?: unknown } | null;
+  }).sessionCapabilities?.resume;
+  return resume !== undefined && resume !== null;
+}
+
+function overlayOpenCodePermission(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const existing = env.OPENCODE_PERMISSION;
+  let parsed: Record<string, unknown> = {};
+  if (existing !== undefined) {
+    try {
+      const value: unknown = JSON.parse(existing);
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("not object");
+      }
+      parsed = value as Record<string, unknown>;
+    } catch {
+      throw new RelayFailure("OPENCODE_PERMISSION_INVALID", "OPENCODE_PERMISSION must be a JSON object");
+    }
+  }
+  return { ...env, OPENCODE_PERMISSION: JSON.stringify({ ...parsed, question: "deny" }) };
+}
+
+function configSelectValues(option: acp.SessionConfigOption): string[] {
+  if (option.type !== "select") return [];
+  const values: string[] = [];
+  for (const entry of option.options) {
+    if ("value" in entry && typeof entry.value === "string") {
+      values.push(entry.value);
+      continue;
+    }
+    if ("options" in entry && Array.isArray(entry.options)) {
+      for (const inner of entry.options) {
+        if (inner && typeof inner === "object" && "value" in inner && typeof inner.value === "string") {
+          values.push(inner.value);
+        }
+      }
+    }
+  }
+  return values;
+}
+
+function usageFromUpdate(update: Extract<acp.SessionUpdate, { sessionUpdate: "usage_update" }>): UsageSummary {
+  const usage: UsageSummary = { used: update.used, size: update.size };
+  if (update.cost && typeof update.cost.amount === "number" && typeof update.cost.currency === "string") {
+    usage.cost = { amount: update.cost.amount, currency: update.cost.currency };
+  }
+  return usage;
 }
 
 function abortFailure(signal: AbortSignal): never {
@@ -208,6 +272,31 @@ class CursorSummaries {
   }
 }
 
+class OpenCodeSummaries {
+  readonly toolCalls: ToolCallSummary[] = [];
+  truncated = false;
+  usage?: UsageSummary;
+
+  constructor(private readonly limitBytes: number) {}
+
+  add(value: ToolCallSummary): void {
+    this.toolCalls.push(value);
+    if (Buffer.byteLength(JSON.stringify({ ...this.result(), summariesTruncated: true })) > this.limitBytes) {
+      this.toolCalls.pop();
+      this.truncated = true;
+    }
+  }
+
+  result(): Pick<RelayResult, "provider" | "toolCalls" | "usage" | "summariesTruncated"> {
+    return {
+      provider: "opencode",
+      ...(this.toolCalls.length ? { toolCalls: this.toolCalls } : {}),
+      ...(this.usage ? { usage: this.usage } : {}),
+      ...(this.truncated ? { summariesTruncated: true } : {}),
+    };
+  }
+}
+
 class AcpRunner {
   constructor(
     private readonly config: RelayConfig,
@@ -218,6 +307,9 @@ class AcpRunner {
   async delegate(input: RunnerInput, signal?: AbortSignal, reportProgress?: ProgressReporter): Promise<RelayResult> {
     if (process.env.GROK_RELAY_DELEGATED === "1") {
       throw new RelayFailure("NESTED_DELEGATION", "Delegation is disabled inside a delegated worker process");
+    }
+    if (this.adapter.provider === "opencode" && input.resume !== undefined && !input.sessionId) {
+      throw new RelayFailure("INVALID_INPUT", "resume requires sessionId");
     }
     if (signal?.aborted) abortFailure(signal);
     const cwd = input.cwd;
@@ -236,8 +328,18 @@ class AcpRunner {
     let pendingError: RelayFailure | undefined;
     let releaseError: unknown;
     const summaries = new CursorSummaries(Math.max(64 * 1_024, this.config.textLimitBytes));
-    const cursorFields = (): Partial<RelayResult> => this.adapter.provider === "cursor" ? summaries.result() : {};
-    const partial = (): Partial<RelayResult> => ({ sessionId, text, truncated: truncated || summaries.truncated, ...cursorFields() });
+    const openCodeSummaries = new OpenCodeSummaries(Math.max(64 * 1_024, this.config.textLimitBytes));
+    const providerFields = (): Partial<RelayResult> => {
+      if (this.adapter.provider === "cursor") return summaries.result();
+      if (this.adapter.provider === "opencode") return openCodeSummaries.result();
+      return {};
+    };
+    const partial = (): Partial<RelayResult> => ({
+      sessionId,
+      text,
+      truncated: truncated || summaries.truncated || openCodeSummaries.truncated,
+      ...providerFields(),
+    });
     const totalAbort = new AbortController();
     let resolveSettled: () => void = () => {};
     const taskEntry: ActiveTask = {
@@ -265,9 +367,10 @@ class AcpRunner {
       const metadata = this.adapter.sessionMetadata(input, record);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const invocation = this.adapter.command(input, record);
+      const childEnv = { ...process.env, GROK_RELAY_DELEGATED: "1" };
       child = spawn(invocation.command, invocation.args, {
         cwd,
-        env: { ...process.env, GROK_RELAY_DELEGATED: "1" },
+        env: this.adapter.spawnEnv ? this.adapter.spawnEnv(childEnv) : childEnv,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
@@ -309,6 +412,24 @@ class AcpRunner {
       let lastProgress = 0;
       let app = acp.client({ name: "codex-grok-relay" })
         .onRequest(acp.methods.client.session.requestPermission, ({ params }) => {
+          if (this.adapter.provider === "opencode") {
+            if (params.sessionId !== sessionId || totalAbort.signal.aborted || permissionFailure) {
+              return { outcome: { outcome: "cancelled" as const } };
+            }
+            const allowOnce = params.options.find((option) => option.kind === "allow_once");
+            if (!allowOnce) {
+              permissionRequested = true;
+              const permissionLabel = boundedString(params.toolCall.title ?? params.toolCall.toolCallId, 256);
+              permissionFailure = new RelayFailure(
+                "PERMISSION_REQUIRED",
+                `OpenCode requested permission without an allow_once option: ${permissionLabel}`,
+                partial(),
+              );
+              setImmediate(() => totalAbort.abort(permissionFailure));
+              return { outcome: { outcome: "cancelled" as const } };
+            }
+            return { outcome: { outcome: "selected" as const, optionId: allowOnce.optionId } };
+          }
           permissionRequested = true;
           if (this.adapter.provider === "cursor") {
             const reject = params.options.find((option) => option.kind === "reject_once");
@@ -353,9 +474,17 @@ class AcpRunner {
             const appended = appendLimited(text, update.content.text, this.config.textLimitBytes);
             text = appended.value;
             truncated ||= appended.truncated;
+          } else if (update.sessionUpdate === "usage_update") {
+            if (this.adapter.provider === "opencode") openCodeSummaries.usage = usageFromUpdate(update);
           } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
             if (this.adapter.provider === "cursor") {
               summaries.add(summaries.toolCalls, {
+                toolCallId: update.toolCallId,
+                ...(update.title ? { title: update.title } : {}),
+                ...(update.status ? { status: update.status } : {}),
+              });
+            } else if (this.adapter.provider === "opencode") {
+              openCodeSummaries.add({
                 toolCallId: update.toolCallId,
                 ...(update.title ? { title: update.title } : {}),
                 ...(update.status ? { status: update.status } : {}),
@@ -428,23 +557,39 @@ class AcpRunner {
           throw new RelayFailure("PROTOCOL_MISMATCH", `${this.adapter.displayName} returned ACP protocol ${initialized.protocolVersion}`);
         }
         const authMethod = this.adapter.authenticate(initialized);
-        if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-        await withTimeout(ctx.request(acp.methods.agent.authenticate, {
-          methodId: authMethod,
-          ...(this.adapter.provider === "grok" ? { _meta: { headless: true } } : {}),
-        }), this.config.phaseTimeoutMs, "AUTH_TIMEOUT", `${this.adapter.displayName} authentication timed out`);
+        if (authMethod) {
+          if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
+          await withTimeout(ctx.request(acp.methods.agent.authenticate, {
+            methodId: authMethod,
+            ...(this.adapter.provider === "grok" ? { _meta: { headless: true } } : {}),
+          }), this.config.phaseTimeoutMs, "AUTH_TIMEOUT", `${this.adapter.displayName} authentication timed out`);
+        }
 
+        let sessionModes: acp.SessionModeState | null | undefined;
+        let configOptions: readonly acp.SessionConfigOption[] | null | undefined;
         if (record) {
           if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-          if (!hasLoadCapability(initialized.agentCapabilities)) {
-            throw new RelayFailure("LOAD_UNSUPPORTED", `${this.adapter.displayName} did not advertise loadSession capability`);
+          const action = this.adapter.existingSession?.(initialized, input) ?? "load";
+          if (action === "resume") {
+            const resumed = await withTimeout(ctx.request(acp.methods.agent.session.resume, {
+              sessionId: record.sessionId,
+              cwd,
+              mcpServers: [],
+            }), this.config.phaseTimeoutMs, "RESUME_TIMEOUT", `${this.adapter.displayName} session resume timed out`);
+            sessionModes = resumed.modes;
+            configOptions = resumed.configOptions;
+          } else {
+            if (!this.adapter.existingSession && !hasLoadCapability(initialized.agentCapabilities)) {
+              throw new RelayFailure("LOAD_UNSUPPORTED", `${this.adapter.displayName} did not advertise loadSession capability`);
+            }
+            const loaded = await withTimeout(ctx.request(acp.methods.agent.session.load, {
+              sessionId: record.sessionId,
+              cwd,
+              mcpServers: [],
+            }), this.config.phaseTimeoutMs, "LOAD_TIMEOUT", `${this.adapter.displayName} session load timed out`);
+            sessionModes = loaded.modes;
+            configOptions = loaded.configOptions;
           }
-          const loaded = await withTimeout(ctx.request(acp.methods.agent.session.load, {
-            sessionId: record.sessionId,
-            cwd,
-            mcpServers: [],
-          }), this.config.phaseTimeoutMs, "LOAD_TIMEOUT", `${this.adapter.displayName} session load timed out`);
-          await this.ensureCursorMode(ctx, loaded.modes, metadata.mode, record.sessionId);
         } else {
           if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
           const created = await withTimeout(ctx.request(acp.methods.agent.session.new, {
@@ -454,9 +599,15 @@ class AcpRunner {
           sessionId = created.sessionId;
           if (!sessionId) throw new RelayFailure("INVALID_SESSION", `${this.adapter.displayName} returned an empty sessionId`);
           if (active) active.sessionId = sessionId;
-          await this.ensureCursorMode(ctx, created.modes, metadata.mode, sessionId);
-          await this.store.writeNew(sessionId, cwd, metadata);
+          sessionModes = created.modes;
+          configOptions = created.configOptions;
         }
+        if (this.adapter.configureSession) {
+          await this.adapter.configureSession(ctx, sessionId as string, input, configOptions, totalAbort.signal);
+        } else {
+          await this.ensureCursorMode(ctx, sessionModes, metadata.mode, sessionId as string);
+        }
+        if (!record) await this.store.writeNew(sessionId as string, cwd, metadata);
 
         promptStarted = true;
         if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
@@ -483,7 +634,13 @@ class AcpRunner {
           totalAbort.signal.addEventListener("abort", () => reject(totalAbort.signal.reason), { once: true });
         }),
       ]);
-      completedResult = { sessionId, stopReason, text, truncated: truncated || summaries.truncated, ...cursorFields() };
+      completedResult = {
+        sessionId,
+        stopReason,
+        text,
+        truncated: truncated || summaries.truncated || openCodeSummaries.truncated,
+        ...providerFields(),
+      };
     } catch (error) {
       if ((totalAbort.signal.aborted || permissionRequested) && active) {
         await active.cancel().catch(() => undefined);
@@ -634,6 +791,66 @@ function cursorAdapter(config: RelayConfig): ProviderAdapter {
   };
 }
 
+function opencodeAdapter(config: RelayConfig): ProviderAdapter {
+  return {
+    provider: "opencode",
+    displayName: "OpenCode",
+    command(input) {
+      return {
+        command: config.opencodeCommand?.trim() || "opencode",
+        args: ["acp", "--cwd", input.cwd],
+      };
+    },
+    authenticate(initialized) {
+      const authIds = authMethodIds(initialized);
+      if (authIds.includes("opencode-login")) return "opencode-login";
+      if (authIds.length === 0) return undefined;
+      throw new RelayFailure("AUTH_UNAVAILABLE", "OpenCode did not advertise non-interactive opencode-login authentication");
+    },
+    capabilities: {},
+    prompt: (task) => `This is a noninteractive delegated task. Do not ask the user questions. Resolve minor ambiguity conservatively. If a material decision is unresolved, stop and report it.\n\n${task}`,
+    sessionMetadata: () => ({}),
+    spawnEnv: overlayOpenCodePermission,
+    existingSession(initialized, input) {
+      if (input.resume === false) {
+        if (!hasLoadCapability(initialized.agentCapabilities)) {
+          throw new RelayFailure("LOAD_UNSUPPORTED", "OpenCode did not advertise loadSession capability");
+        }
+        return "load";
+      }
+      if (hasResumeCapability(initialized.agentCapabilities)) return "resume";
+      if (hasLoadCapability(initialized.agentCapabilities)) return "load";
+      throw new RelayFailure("LOAD_UNSUPPORTED", "OpenCode did not advertise session resume or loadSession capability");
+    },
+    async configureSession(ctx, sessionId, input, configOptions, signal) {
+      const requested = [
+        ["model", input.model],
+        ["effort", input.effort],
+        ["mode", input.agent],
+      ] as const;
+      let options = [...(configOptions ?? [])];
+      for (const [id, value] of requested) {
+        if (value === undefined) continue;
+        if (signal?.aborted) abortFailure(signal);
+        const option = options.find((entry) => entry.id === id);
+        if (!option) {
+          throw new RelayFailure("CONFIG_UNSUPPORTED", `OpenCode did not advertise the ${id} session option`);
+        }
+        if (!configSelectValues(option).includes(value)) {
+          throw new RelayFailure("INVALID_CONFIG", `OpenCode ${id} value is not available`);
+        }
+        const response = await withTimeout(ctx.request(acp.methods.agent.session.setConfigOption, {
+          sessionId,
+          configId: id,
+          value,
+        }), config.phaseTimeoutMs, "CONFIG_TIMEOUT", `OpenCode ${id} configuration timed out`);
+        if (signal?.aborted) abortFailure(signal);
+        options = [...response.configOptions];
+      }
+    },
+  };
+}
+
 export class GrokRunner extends AcpRunner {
   constructor(config: RelayConfig, store: SessionStore) {
     super(config, store, grokAdapter(config));
@@ -647,6 +864,16 @@ export class GrokRunner extends AcpRunner {
 export class CursorRunner extends AcpRunner {
   constructor(config: RelayConfig, store: SessionStore) {
     super(config, store, cursorAdapter(config));
+  }
+}
+
+export class OpenCodeRunner extends AcpRunner {
+  constructor(config: RelayConfig, store: SessionStore) {
+    super(config, store, opencodeAdapter(config));
+  }
+
+  override delegate(input: OpenCodeDelegateInput, signal?: AbortSignal, reportProgress?: ProgressReporter): Promise<RelayResult> {
+    return super.delegate(input, signal, reportProgress);
   }
 }
 

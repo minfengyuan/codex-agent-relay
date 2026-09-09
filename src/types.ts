@@ -1,16 +1,23 @@
 export type RelayError = { code: string; message: string };
 
+export type UsageSummary = {
+  used: number;
+  size: number;
+  cost?: { amount: number; currency: string };
+};
+
 export type RelayResult = {
   sessionId: string | null;
   stopReason: string | null;
   text: string;
   truncated: boolean;
-  provider?: "cursor";
+  provider?: "cursor" | "opencode";
   toolCalls?: ToolCallSummary[];
   todos?: TodoSummary[];
   subagents?: SubagentSummary[];
   interactions?: InteractionSummary[];
   images?: ImageSummary[];
+  usage?: UsageSummary;
   summariesTruncated?: boolean;
   error?: RelayError;
 };
@@ -26,6 +33,13 @@ export type CursorMode = "agent" | "ask";
 export type CursorDelegateInput = DelegateInput & {
   model?: string;
   mode?: CursorMode;
+};
+
+export type OpenCodeDelegateInput = DelegateInput & {
+  resume?: boolean;
+  model?: string;
+  effort?: string;
+  agent?: string;
 };
 
 export type ToolCallSummary = {

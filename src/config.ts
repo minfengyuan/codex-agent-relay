@@ -5,6 +5,7 @@ export type RelayConfig = {
   command: string;
   commandArgs: string[];
   cursorCommand?: string;
+  opencodeCommand?: string;
   stateDir: string;
   phaseTimeoutMs: number;
   totalTimeoutMs: number;
@@ -26,6 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
     command: env.GROK_RELAY_GROK_COMMAND ?? "grok",
     commandArgs: ["--no-auto-update", "--sandbox", "workspace", "agent", "--always-approve", "--no-leader", "stdio"],
     ...(env.GROK_RELAY_CURSOR_COMMAND?.trim() ? { cursorCommand: env.GROK_RELAY_CURSOR_COMMAND.trim() } : {}),
+    opencodeCommand: env.GROK_RELAY_OPENCODE_COMMAND?.trim() || "opencode",
     stateDir: env.GROK_RELAY_STATE_DIR ?? join(homedir(), ".local", "state", "codex-grok-relay"),
     phaseTimeoutMs: positiveInt(env.GROK_RELAY_PHASE_TIMEOUT_MS, 30_000),
     totalTimeoutMs: positiveInt(env.GROK_RELAY_TOTAL_TIMEOUT_MS, 3_600_000),

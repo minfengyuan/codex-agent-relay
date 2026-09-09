@@ -35,7 +35,7 @@ async function harness() {
 }
 
 describe("MCP server", () => {
-  it("discovers Grok and Cursor delegation with their input contracts", async () => {
+  it("discovers Grok, Cursor, and OpenCode delegation with their input contracts", async () => {
     const { server, clientTransport, request } = await harness();
     const response = await request(2, "tools/list");
     expect(response).toHaveProperty("result.tools.0.name", "grok_delegate");
@@ -45,6 +45,11 @@ describe("MCP server", () => {
     expect(response).toHaveProperty("result.tools.1.inputSchema.required", ["task", "cwd"]);
     expect(response).toHaveProperty("result.tools.1.inputSchema.properties.mode.enum", ["agent", "ask"]);
     expect(response).toHaveProperty("result.tools.1.outputSchema.properties.provider.const", "cursor");
+    expect(response).toHaveProperty("result.tools.2.name", "opencode_delegate");
+    expect(response).toHaveProperty("result.tools.2.inputSchema.required", ["task", "cwd"]);
+    expect(response).toHaveProperty("result.tools.2.inputSchema.properties.resume");
+    expect(response).toHaveProperty("result.tools.2.outputSchema.properties.provider.const", "opencode");
+    expect(response).not.toHaveProperty("result.tools.0.outputSchema.properties.provider");
     await clientTransport.close();
     await server.close();
   });
@@ -82,6 +87,25 @@ describe("MCP server", () => {
       truncated: false,
       provider: "cursor",
       error: { code: "CURSOR_COMMAND_REQUIRED" },
+    });
+    await clientTransport.close();
+    await server.close();
+  });
+
+  it("returns a structured OpenCode resume input error without spawning", async () => {
+    const { server, clientTransport, request } = await harness();
+    const response = await request(5, "tools/call", {
+      name: "opencode_delegate",
+      arguments: { task: "hello", cwd: process.cwd(), resume: true },
+    }) as { result?: { isError?: boolean; structuredContent?: unknown } };
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({
+      sessionId: null,
+      stopReason: null,
+      text: "",
+      truncated: false,
+      provider: "opencode",
+      error: { code: "INVALID_INPUT" },
     });
     await clientTransport.close();
     await server.close();
