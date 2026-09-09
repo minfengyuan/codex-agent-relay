@@ -35,12 +35,16 @@ async function harness() {
 }
 
 describe("MCP server", () => {
-  it("discovers exactly grok_delegate with the required input contract", async () => {
+  it("discovers Grok and Cursor delegation with their input contracts", async () => {
     const { server, clientTransport, request } = await harness();
     const response = await request(2, "tools/list");
     expect(response).toHaveProperty("result.tools.0.name", "grok_delegate");
     expect(response).toHaveProperty("result.tools.0.inputSchema.required", ["task", "cwd"]);
     expect(response).toHaveProperty("result.tools.0.outputSchema.properties.sessionId");
+    expect(response).toHaveProperty("result.tools.1.name", "cursor_delegate");
+    expect(response).toHaveProperty("result.tools.1.inputSchema.required", ["task", "cwd"]);
+    expect(response).toHaveProperty("result.tools.1.inputSchema.properties.mode.enum", ["agent", "ask"]);
+    expect(response).toHaveProperty("result.tools.1.outputSchema.properties.provider.const", "cursor");
     await clientTransport.close();
     await server.close();
   });
@@ -59,6 +63,25 @@ describe("MCP server", () => {
       text: "",
       truncated: false,
       error: { code: "INVALID_CWD" },
+    });
+    await clientTransport.close();
+    await server.close();
+  });
+
+  it("returns a structured Cursor configuration error without affecting Grok configuration", async () => {
+    const { server, clientTransport, request } = await harness();
+    const response = await request(4, "tools/call", {
+      name: "cursor_delegate",
+      arguments: { task: "hello", cwd: process.cwd() },
+    }) as { result?: { isError?: boolean; structuredContent?: unknown } };
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({
+      sessionId: null,
+      stopReason: null,
+      text: "",
+      truncated: false,
+      provider: "cursor",
+      error: { code: "CURSOR_COMMAND_REQUIRED" },
     });
     await clientTransport.close();
     await server.close();

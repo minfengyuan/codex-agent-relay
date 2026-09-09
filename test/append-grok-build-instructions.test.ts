@@ -36,8 +36,10 @@ describe("append-grok-build-instructions", () => {
     await run(codexHome);
     const second = await readFile(`${codexHome}/AGENTS.md`, "utf8");
 
-    expect(first).toContain("## Grok Build delegation");
-    expect(first).toContain("The `grok_delegate` tool delegates implementation work to Grok Build.");
+    expect(first).toContain("## External coding agents");
+    expect(first).toContain("`grok_delegate`");
+    expect(first).toContain("`cursor_delegate`");
+    expect(first).toContain("PERMISSION_REQUIRED");
     expect(first.match(new RegExp(startMarker, "g"))).toHaveLength(1);
     expect(second).toBe(first);
   });
@@ -54,7 +56,7 @@ describe("append-grok-build-instructions", () => {
     const content = await readFile(`${codexHome}/AGENTS.md`, "utf8");
 
     expect(content).toMatch(/^# Existing\n\n/);
-    expect(content).toContain("  - pass the absolute workspace/worktree path as cwd;");
+    expect(content).toContain("Pass the absolute workspace/worktree path as cwd");
     expect(content).not.toContain("Old instructions");
     expect(content).toMatch(/\n\nAfter\n$/);
   });

@@ -9,6 +9,8 @@ export type SessionRecord = {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  model?: string;
+  mode?: "agent" | "ask";
 };
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
@@ -37,8 +39,8 @@ export class SessionStore {
   readonly sessionsDir: string;
   readonly locksDir: string;
 
-  constructor(readonly stateDir: string) {
-    this.sessionsDir = join(stateDir, "sessions");
+  constructor(readonly stateDir: string, namespace?: string) {
+    this.sessionsDir = namespace ? join(stateDir, "sessions", namespace) : join(stateDir, "sessions");
     this.locksDir = join(stateDir, "locks");
   }
 
@@ -76,10 +78,10 @@ export class SessionStore {
     return record;
   }
 
-  async writeNew(sessionId: string, cwd: string): Promise<void> {
+  async writeNew(sessionId: string, cwd: string, metadata: Pick<SessionRecord, "model" | "mode"> = {}): Promise<void> {
     await this.init();
     const now = new Date().toISOString();
-    const record = { version: 1 as const, sessionId, cwd, createdAt: now, updatedAt: now };
+    const record = { version: 1 as const, sessionId, cwd, createdAt: now, updatedAt: now, ...metadata };
     const path = this.pathFor(sessionId);
     const temp = join(dirname(path), `.${digest(sessionId)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
     try {
@@ -122,7 +124,7 @@ export class SessionStore {
       await handle?.close().catch(() => undefined);
       if (handle) await rm(path, { force: true }).catch(() => undefined);
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new RelayFailure("WORKSPACE_BUSY", `Another Grok task is active for ${cwd}`);
+        throw new RelayFailure("WORKSPACE_BUSY", `Another delegated task is active for ${cwd}`);
       }
       throw new RelayFailure("LOCK_IO", `Cannot acquire cwd lock: ${String(error)}`);
     }
@@ -143,5 +145,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
   if (!value || typeof value !== "object") return false;
   const v = value as Partial<SessionRecord>;
   return v.version === 1 && typeof v.sessionId === "string" && typeof v.cwd === "string"
-    && typeof v.createdAt === "string" && typeof v.updatedAt === "string";
+    && typeof v.createdAt === "string" && typeof v.updatedAt === "string"
+    && (v.model === undefined || typeof v.model === "string")
+    && (v.mode === undefined || v.mode === "agent" || v.mode === "ask");
 }

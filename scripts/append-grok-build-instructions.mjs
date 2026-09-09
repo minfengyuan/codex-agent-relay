@@ -8,21 +8,21 @@ import { log, warn } from "node:console";
 const START_MARKER = "<!-- GROK-BUILD_START -->";
 const END_MARKER = "<!-- GROK-BUILD_END -->";
 const INSTRUCTIONS = `<!-- GROK-BUILD_START -->
-## Grok Build delegation
+## External coding agents
 
-The \`grok_delegate\` tool delegates implementation work to Grok Build.
+Codex owns planning, delegation, review, and integration. External agents execute bounded tasks in the supplied workspace/worktree.
 
-Use it when:
-  - the user explicitly asks Grok Build to implement something;
-  - a self-contained implementation task can be delegated;
-  - parallel implementation in a separate worktree is useful.
+- Use \`grok_delegate\` for self-contained implementation work or an explicit Grok Build request.
+- Use \`cursor_delegate\` for Cursor implementation tasks or focused analysis in \`ask\` mode; an optional \`model\` selects the startup model.
 
 When delegating:
-  - pass the absolute workspace/worktree path as cwd;
-  - give Grok Build a complete task specification;
-  - let Grok Build edit files directly;
-  - after completion, inspect and review its changes yourself;
-  - do not duplicate the implementation unless its result is incomplete.
+
+- Pass the absolute workspace/worktree path as cwd and a complete task specification.
+- Use separate worktrees for parallel writers; a worktree is not a security boundary.
+- Let the selected agent edit files directly, then inspect the diff and verify relevant tests before integration.
+- Do not duplicate completed implementation work unless the result is incomplete.
+- Cursor uses its native permission rules and sandbox. On PERMISSION_REQUIRED, review the returned request and coordinate any policy change before resuming; do not retry to bypass the rejection.
+- Keep this relay out of downstream agents' MCP configuration to avoid recursive delegation.
 <!-- GROK-BUILD_END -->`;
 
 function applyInstructions(content) {
@@ -67,10 +67,10 @@ const current = await readIfPresent(agentsPath);
 const updated = applyInstructions(current);
 
 if (updated === current) {
-  log(`Grok Build instructions are already present in ${agentsPath}`);
+  log(`External coding agent instructions are already present in ${agentsPath}`);
 } else {
   await writeFile(agentsPath, updated, "utf8");
-  log(`Updated ${agentsPath} with Grok Build instructions`);
+  log(`Updated ${agentsPath} with external coding agent instructions`);
 }
 
 if ((await readIfPresent(overridePath)).trim()) {
