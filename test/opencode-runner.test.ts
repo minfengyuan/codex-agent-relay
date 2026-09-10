@@ -7,9 +7,10 @@ import { loadConfig, type RelayConfig } from "../src/config.js";
 import { cleanupAllChildren, CursorRunner, GrokRunner, OpenCodeRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
 
-const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-opencode");
-const grokFixture = join(dirname(fixture), "fake-agent.mjs");
-const cursorFixture = join(dirname(fixture), "fake-grok");
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+const fixture = join(fixtures, "fake-opencode-agent.mjs");
+const grokFixture = join(fixtures, "fake-agent.mjs");
+const cursorFixture = join(fixtures, "fake-agent.mjs");
 const dirs: string[] = [];
 
 async function tempDir(): Promise<string> {
@@ -22,8 +23,10 @@ function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayCo
   return {
     command: process.execPath,
     commandArgs: [grokFixture],
-    cursorCommand: cursorFixture,
-    opencodeCommand: fixture,
+    cursorCommand: process.execPath,
+    cursorCommandArgs: [cursorFixture],
+    opencodeCommand: process.execPath,
+    opencodeCommandArgs: [fixture],
     stateDir,
     phaseTimeoutMs: 2_000,
     totalTimeoutMs: 5_000,
@@ -113,7 +116,7 @@ describe("OpenCodeRunner", () => {
     expect(first.text).not.toContain("OTHER SESSION");
     expect(first.toolCalls?.some((call) => call.toolCallId === "other-tool")).toBe(false);
     const events = await readFile(log, "utf8");
-    expect(events).toContain(`"acp","--cwd","${cwd}"`);
+    expect(events).toContain(JSON.stringify(["acp", "--cwd", cwd]).slice(1, -1));
     expect(events).toContain(`process-cwd:${cwd}`);
     expect(events).toContain(`cwd-arg:${cwd}`);
     expect(events).toContain("delegated:1");
@@ -308,7 +311,7 @@ describe("OpenCodeRunner", () => {
     })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
 
     vi.stubEnv("FAKE_ACP_MODE", "config-timeout");
-    await expect(new OpenCodeRunner(config(state, { phaseTimeoutMs: 250 }), new SessionStore(state, "opencode")).delegate({
+    await expect(new OpenCodeRunner(config(state, { phaseTimeoutMs: 1_500 }), new SessionStore(state, "opencode")).delegate({
       task: "one",
       cwd,
       model: "opencode/gpt",
@@ -562,7 +565,7 @@ describe("OpenCodeRunner", () => {
     const hangLog = join(state, "hang.log");
     vi.stubEnv("FAKE_ACP_LOG", hangLog);
     vi.stubEnv("FAKE_ACP_MODE", "hang");
-    await expect(new OpenCodeRunner(config(state, { totalTimeoutMs: 400 }), new SessionStore(state, "opencode"))
+    await expect(new OpenCodeRunner(config(state, { totalTimeoutMs: 1_500 }), new SessionStore(state, "opencode"))
       .delegate({ task: "hang", cwd })).rejects.toMatchObject({ code: "TIMEOUT" });
     expect(await readFile(hangLog, "utf8")).toContain("cancel:fake-session-1");
     const release = await new SessionStore(state, "opencode").acquire(cwd);

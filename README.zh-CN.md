@@ -25,6 +25,17 @@ pnpm test
 pnpm build
 ```
 
+在 Windows PowerShell 中，如果执行策略阻止运行 `pnpm.ps1`，请改用
+`pnpm.cmd`；其余命令保持不变：
+
+```powershell
+pnpm.cmd install
+pnpm.cmd lint
+pnpm.cmd typecheck
+pnpm.cmd test
+pnpm.cmd build
+```
+
 构建产物为 `dist/cli.js`。将它注册为 Codex 的 MCP server 时，请使用本机绝对路径：
 
 ```toml
@@ -45,6 +56,9 @@ CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
 请填写实际 Cursor CLI 的路径，不限文件名。不要假定 `agent` 就是 Cursor，Grok 也可能使用该命令名。未配置 Cursor 时仍注册三个工具，仅 Cursor 调用返回配置错误。委派前单独执行 Cursor 的 `login`，或通过 relay 环境提供 `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN`；不要把凭据放入工具参数。
+
+在 Windows 上，请配置 `cursor-agent.exe` 之类的原生可执行文件，不要配置
+`.cmd` 或 `.bat` shim。后端进程会有意在不启用 shell 的情况下启动。
 
 OpenCode 默认使用 `opencode` 可执行文件。仅在二进制不在 `PATH` 时覆盖：
 

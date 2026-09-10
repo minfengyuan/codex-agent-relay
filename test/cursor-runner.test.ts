@@ -7,7 +7,8 @@ import type { RelayConfig } from "../src/config.js";
 import { cleanupAllChildren, CursorRunner, GrokRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
 
-const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-grok");
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+const fixture = join(fixtures, "fake-agent.mjs");
 const dirs: string[] = [];
 
 async function tempDir(): Promise<string> {
@@ -19,8 +20,9 @@ async function tempDir(): Promise<string> {
 function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
   return {
     command: process.execPath,
-    commandArgs: [join(dirname(fixture), "fake-agent.mjs")],
-    cursorCommand: fixture,
+    commandArgs: [join(fixtures, "fake-agent.mjs")],
+    cursorCommand: process.execPath,
+    cursorCommandArgs: [fixture],
     stateDir,
     phaseTimeoutMs: 2_000,
     totalTimeoutMs: 5_000,

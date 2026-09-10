@@ -71,8 +71,14 @@ describe("SessionStore", () => {
     await chmod(store.sessionsDir, 0o755);
     await chmod(store.locksDir, 0o755);
     await store.init();
-    expect((await stat(store.sessionsDir)).mode & 0o777).toBe(0o700);
-    expect((await stat(store.locksDir)).mode & 0o777).toBe(0o700);
+    const sessions = await stat(store.sessionsDir);
+    const locks = await stat(store.locksDir);
+    expect(sessions.isDirectory()).toBe(true);
+    expect(locks.isDirectory()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(sessions.mode & 0o777).toBe(0o700);
+      expect(locks.mode & 0o777).toBe(0o700);
+    }
   });
 
   it("locks the same real cwd across store instances and permits different cwd", async () => {

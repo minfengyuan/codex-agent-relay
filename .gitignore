@@ -1,5 +1,11 @@
+# Cache
 node_modules/
+.pnpm-store/
+
+# Test
 dist/
 coverage/
 *.log
+
+# Other
 .codegraph/

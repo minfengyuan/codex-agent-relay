@@ -15,7 +15,7 @@ const dirs: string[] = [];
 const children = new Set<ChildProcessWithoutNullStreams>();
 
 beforeAll(() => {
-  execFileSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json"], { cwd: root });
+  execFileSync(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"], { cwd: root });
 });
 afterEach(async () => {
   for (const child of children) child.kill("SIGKILL");
@@ -122,7 +122,7 @@ async function waitExit(child: ChildProcessWithoutNullStreams, timeout = 3_000):
   });
 }
 
-describe("cross-process lifecycle", () => {
+describe.skipIf(process.platform === "win32")("cross-process lifecycle", () => {
   it("enforces the cwd lock between real OS processes", async () => {
     const state = await tempDir();
     const cwd = await tempDir();

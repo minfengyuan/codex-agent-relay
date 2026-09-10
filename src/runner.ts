@@ -760,7 +760,7 @@ function cursorAdapter(config: RelayConfig): ProviderAdapter {
         throw new RelayFailure("CURSOR_COMMAND_REQUIRED", "CODEX_AGENT_RELAY_CURSOR_COMMAND must name the Cursor CLI executable");
       }
       const metadata = this.sessionMetadata(input, record);
-      const args = ["--sandbox", "enabled"];
+      const args = [...(config.cursorCommandArgs ?? []), "--sandbox", "enabled"];
       if (metadata.model) args.push("--model", metadata.model);
       if (metadata.mode === "ask") args.push("--mode", "ask");
       args.push("acp");
@@ -798,7 +798,7 @@ function opencodeAdapter(config: RelayConfig): ProviderAdapter {
     command(input) {
       return {
         command: config.opencodeCommand?.trim() || "opencode",
-        args: ["acp", "--cwd", input.cwd],
+        args: [...(config.opencodeCommandArgs ?? []), "acp", "--cwd", input.cwd],
       };
     },
     authenticate(initialized) {

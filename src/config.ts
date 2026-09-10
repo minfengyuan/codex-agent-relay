@@ -5,7 +5,9 @@ export type RelayConfig = {
   command: string;
   commandArgs: string[];
   cursorCommand?: string;
+  cursorCommandArgs?: string[];
   opencodeCommand?: string;
+  opencodeCommandArgs?: string[];
   stateDir: string;
   phaseTimeoutMs: number;
   totalTimeoutMs: number;

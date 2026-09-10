@@ -7,7 +7,7 @@ import { loadConfig } from "../src/config.js";
 import { OpenCodeRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
 
-const enabled = process.env.RUN_OPENCODE_REAL_TESTS === "1";
+const enabled = process.env.RUN_OPENCODE_REAL_TESTS === "1" || process.env.npm_lifecycle_event === "test:real:opencode";
 const describeReal = enabled ? describe : describe.skip;
 const roots: string[] = [];
 

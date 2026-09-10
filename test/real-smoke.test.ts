@@ -7,7 +7,7 @@ import { loadConfig } from "../src/config.js";
 import { GrokRunner } from "../src/runner.js";
 import { SessionStore, resolveCwd } from "../src/store.js";
 
-const enabled = process.env.RUN_GROK_REAL_TESTS === "1";
+const enabled = process.env.RUN_GROK_REAL_TESTS === "1" || process.env.npm_lifecycle_event === "test:real";
 const stateDir = enabled ? await mkdtemp(join(tmpdir(), "relay-real-")) : "";
 const workspaceDir = enabled ? await mkdtemp(join(tmpdir(), "relay-real-workspace-")) : "";
 afterAll(async () => {

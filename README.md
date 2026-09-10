@@ -25,6 +25,17 @@ pnpm test
 pnpm build
 ```
 
+On Windows PowerShell, use `pnpm.cmd` if the execution policy blocks the
+`pnpm.ps1` shim. The commands are otherwise identical:
+
+```powershell
+pnpm.cmd install
+pnpm.cmd lint
+pnpm.cmd typecheck
+pnpm.cmd test
+pnpm.cmd build
+```
+
 The build output is `dist/cli.js`. Register it as a Codex MCP server using an absolute local path:
 
 ```toml
@@ -34,6 +45,10 @@ args = ["/ABSOLUTE/PATH/codex-agent-relay/dist/cli.js"]
 startup_timeout_sec = 10
 tool_timeout_sec = 3660
 ```
+
+On Windows, use an absolute path such as
+`C:/work/codex-agent-relay/dist/cli.js`. Forward slashes avoid TOML escaping
+issues with backslashes.
 
 `tool_timeout_sec` should cover the relay's default 3600-second total call limit. The relay uses stdout only for MCP protocol traffic and writes diagnostics to stderr.
 
@@ -45,6 +60,10 @@ CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
 Use the actual Cursor CLI executable, regardless of its filename. Do not assume `agent` is Cursor: Grok installations may use the same command name. All three tools are registered even when Cursor is not configured; only Cursor calls then fail with a configuration error. Run Cursor's `login` command separately before delegation, or provide `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` through the relay environment. Never put credentials in tool arguments.
+
+On Windows, configure a native executable such as `cursor-agent.exe`, not a
+`.cmd` or `.bat` shim. Backend processes are intentionally started without a
+shell.
 
 OpenCode defaults to the `opencode` executable. Override it only when the binary is not on `PATH`:
 

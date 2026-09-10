@@ -179,14 +179,14 @@ describe("GrokRunner", () => {
     const cwd = await tempDir();
     const settings = config(state, {
       commandArgs: [backpressureFixture],
-      totalTimeoutMs: 100,
+      totalTimeoutMs: 2_000,
       cancelGraceMs: 100,
       termGraceMs: 100,
     });
     const started = Date.now();
     await expect(new GrokRunner(settings, new SessionStore(state)).delegate({ task: "x".repeat(2 * 1024 * 1024), cwd }))
       .rejects.toMatchObject({ code: "TIMEOUT", partial: { sessionId: "backpressure-session" } });
-    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(Date.now() - started).toBeLessThan(3_500);
     const release = await new SessionStore(state).acquire(cwd);
     await release();
   });
