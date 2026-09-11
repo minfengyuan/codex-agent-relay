@@ -3,7 +3,14 @@ import { z } from "zod";
 import type { RelayConfig } from "./config.js";
 import { SessionStore, resolveCwd } from "./store.js";
 import { CursorRunner, GrokRunner, OpenCodeRunner, type ProgressReporter } from "./runner.js";
-import { RelayFailure, type RelayResult } from "./types.js";
+import {
+  RelayFailure,
+  type CursorRelayResult,
+  type GrokRelayResult,
+  type OpenCodeRelayResult,
+  type RelayResult,
+  type RelayResultPartial,
+} from "./types.js";
 
 const grokInputSchema = z.object({
   task: z.string().trim().min(1).describe("Task for Grok"),
@@ -100,6 +107,79 @@ function toolResult(result: RelayResult, isError = false) {
   };
 }
 
+function isCursorPartial(value: RelayResultPartial | undefined): value is Partial<CursorRelayResult> {
+  return value !== undefined && "provider" in value && value.provider === "cursor";
+}
+
+function isOpenCodePartial(value: RelayResultPartial | undefined): value is Partial<OpenCodeRelayResult> {
+  return value !== undefined && "provider" in value && value.provider === "opencode";
+}
+
+function errorFields(failure: RelayFailure, sessionId: string | undefined) {
+  return {
+    sessionId: failure.partial?.sessionId ?? sessionId ?? null,
+    stopReason: failure.partial?.stopReason ?? null,
+    text: failure.partial?.text ?? "",
+    truncated: failure.partial?.truncated ?? false,
+    error: { code: failure.code, message: failure.message },
+  };
+}
+
+type ToolContext = {
+  mcpReq: {
+    _meta?: unknown;
+    signal: AbortSignal;
+    notify: (notification: {
+      method: "notifications/progress";
+      params: { progressToken: string | number; progress: number; message: string };
+    }) => Promise<void>;
+  };
+};
+
+function progressReporter(ctx: ToolContext): ProgressReporter | undefined {
+  let progress = 0;
+  const token = (ctx.mcpReq._meta as { progressToken?: string | number } | undefined)?.progressToken;
+  if (token === undefined) return undefined;
+  return async (message: string) => {
+    progress += 1;
+    await ctx.mcpReq.notify({
+      method: "notifications/progress",
+      params: { progressToken: token, progress, message },
+    });
+  };
+}
+
+function registerDelegateTool<I extends { cwd: string }, R extends RelayResult>(
+  server: McpServer,
+  spec: {
+    name: string;
+    title: string;
+    description: string;
+    inputSchema: z.ZodTypeAny;
+    outputSchema: z.ZodTypeAny;
+    run: (input: I, cwd: string, signal: AbortSignal, progress?: ProgressReporter) => Promise<R>;
+    toErrorResult: (failure: RelayFailure, input: I) => R;
+  },
+): void {
+  server.registerTool(spec.name, {
+    title: spec.title,
+    description: spec.description,
+    inputSchema: spec.inputSchema,
+    outputSchema: spec.outputSchema,
+  }, async (input, ctx) => {
+    const parsed = input as I;
+    try {
+      const cwd = await resolveCwd(parsed.cwd);
+      return toolResult(await spec.run(parsed, cwd, ctx.mcpReq.signal, progressReporter(ctx)));
+    } catch (error) {
+      const failure = error instanceof RelayFailure
+        ? error
+        : new RelayFailure("INTERNAL", error instanceof Error ? error.message : String(error));
+      return toolResult(spec.toErrorResult(failure, parsed), true);
+    }
+  });
+}
+
 export function createRelayServer(config: RelayConfig): McpServer {
   const server = new McpServer(
     { name: "codex-agent-relay", version: "0.1.0" },
@@ -109,124 +189,74 @@ export function createRelayServer(config: RelayConfig): McpServer {
   const cursorRunner = new CursorRunner(config, new SessionStore(config.stateDir, "cursor"));
   const openCodeRunner = new OpenCodeRunner(config, new SessionStore(config.stateDir, "opencode"));
 
-  const progressReporter = (ctx: { mcpReq: { _meta?: unknown; notify: (notification: {
-    method: "notifications/progress";
-    params: { progressToken: string | number; progress: number; message: string };
-  }) => Promise<void> } }): ProgressReporter | undefined => {
-    let progress = 0;
-    const token = (ctx.mcpReq._meta as { progressToken?: string | number } | undefined)?.progressToken;
-    if (token === undefined) return undefined;
-    return async (message: string) => {
-      progress += 1;
-      await ctx.mcpReq.notify({
-        method: "notifications/progress",
-        params: { progressToken: token, progress, message },
-      });
-    };
-  };
-
-  server.registerTool("grok_delegate", {
+  registerDelegateTool(server, {
+    name: "grok_delegate",
     title: "Delegate a task to Grok",
     description: "Runs one Grok ACP prompt in the requested working directory and optionally resumes a saved Grok session.",
     inputSchema: grokInputSchema,
     outputSchema,
-  }, async (input, ctx) => {
-    try {
-      const cwd = await resolveCwd(input.cwd);
-      const result = await runner.delegate({
-        task: input.task,
-        cwd,
-        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-      }, ctx.mcpReq.signal, progressReporter(ctx));
-      return toolResult(result);
-    } catch (error) {
-      const failure = error instanceof RelayFailure
-        ? error
-        : new RelayFailure("INTERNAL", error instanceof Error ? error.message : String(error));
-      const result: RelayResult = {
-        sessionId: failure.partial?.sessionId ?? input.sessionId ?? null,
-        stopReason: failure.partial?.stopReason ?? null,
-        text: failure.partial?.text ?? "",
-        truncated: failure.partial?.truncated ?? false,
-        error: { code: failure.code, message: failure.message },
-      };
-      return toolResult(result, true);
-    }
+    run: (input: z.infer<typeof grokInputSchema>, cwd, signal, progress) => runner.delegate({
+      task: input.task,
+      cwd,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+    }, signal, progress),
+    toErrorResult: (failure, input): GrokRelayResult => errorFields(failure, input.sessionId),
   });
 
-  server.registerTool("cursor_delegate", {
+  registerDelegateTool(server, {
+    name: "cursor_delegate",
     title: "Delegate a task to Cursor",
     description: "Runs one Cursor ACP prompt in the requested working directory and optionally resumes a saved Cursor session.",
     inputSchema: cursorInputSchema,
     outputSchema: cursorOutputSchema,
-  }, async (input, ctx) => {
-    try {
-      const cwd = await resolveCwd(input.cwd);
-      const result = await cursorRunner.delegate({
-        task: input.task,
-        cwd,
-        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-        ...(input.model === undefined ? {} : { model: input.model }),
-        ...(input.mode === undefined ? {} : { mode: input.mode }),
-      }, ctx.mcpReq.signal, progressReporter(ctx));
-      return toolResult(result);
-    } catch (error) {
-      const failure = error instanceof RelayFailure
-        ? error
-        : new RelayFailure("INTERNAL", error instanceof Error ? error.message : String(error));
-      const result: RelayResult = {
-        sessionId: failure.partial?.sessionId ?? input.sessionId ?? null,
-        stopReason: failure.partial?.stopReason ?? null,
-        text: failure.partial?.text ?? "",
-        truncated: failure.partial?.truncated ?? false,
+    run: (input: z.infer<typeof cursorInputSchema>, cwd, signal, progress) => cursorRunner.delegate({
+      task: input.task,
+      cwd,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.mode === undefined ? {} : { mode: input.mode }),
+    }, signal, progress),
+    toErrorResult: (failure, input): CursorRelayResult => {
+      const extra = isCursorPartial(failure.partial) ? failure.partial : undefined;
+      return {
+        ...errorFields(failure, input.sessionId),
         provider: "cursor",
-        ...(failure.partial?.toolCalls ? { toolCalls: failure.partial.toolCalls } : {}),
-        ...(failure.partial?.todos ? { todos: failure.partial.todos } : {}),
-        ...(failure.partial?.subagents ? { subagents: failure.partial.subagents } : {}),
-        ...(failure.partial?.interactions ? { interactions: failure.partial.interactions } : {}),
-        ...(failure.partial?.images ? { images: failure.partial.images } : {}),
-        ...(failure.partial?.summariesTruncated ? { summariesTruncated: true } : {}),
-        error: { code: failure.code, message: failure.message },
+        ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
+        ...(extra?.todos ? { todos: extra.todos } : {}),
+        ...(extra?.subagents ? { subagents: extra.subagents } : {}),
+        ...(extra?.interactions ? { interactions: extra.interactions } : {}),
+        ...(extra?.images ? { images: extra.images } : {}),
+        ...(extra?.summariesTruncated ? { summariesTruncated: true } : {}),
       };
-      return toolResult(result, true);
-    }
+    },
   });
 
-  server.registerTool("opencode_delegate", {
+  registerDelegateTool(server, {
+    name: "opencode_delegate",
     title: "Delegate a task to OpenCode",
     description: "Runs one OpenCode ACP prompt in the requested working directory and optionally resumes or loads a saved OpenCode session.",
     inputSchema: openCodeInputSchema,
     outputSchema: openCodeOutputSchema,
-  }, async (input, ctx) => {
-    try {
-      const cwd = await resolveCwd(input.cwd);
-      const result = await openCodeRunner.delegate({
-        task: input.task,
-        cwd,
-        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-        ...(input.resume === undefined ? {} : { resume: input.resume }),
-        ...(input.model === undefined ? {} : { model: input.model }),
-        ...(input.effort === undefined ? {} : { effort: input.effort }),
-        ...(input.agent === undefined ? {} : { agent: input.agent }),
-      }, ctx.mcpReq.signal, progressReporter(ctx));
-      return toolResult(result);
-    } catch (error) {
-      const failure = error instanceof RelayFailure
-        ? error
-        : new RelayFailure("INTERNAL", error instanceof Error ? error.message : String(error));
-      const result: RelayResult = {
-        sessionId: failure.partial?.sessionId ?? input.sessionId ?? null,
-        stopReason: failure.partial?.stopReason ?? null,
-        text: failure.partial?.text ?? "",
-        truncated: failure.partial?.truncated ?? false,
+    run: (input: z.infer<typeof openCodeInputSchema>, cwd, signal, progress) => openCodeRunner.delegate({
+      task: input.task,
+      cwd,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      ...(input.resume === undefined ? {} : { resume: input.resume }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.effort === undefined ? {} : { effort: input.effort }),
+      ...(input.agent === undefined ? {} : { agent: input.agent }),
+    }, signal, progress),
+    toErrorResult: (failure, input): OpenCodeRelayResult => {
+      const extra = isOpenCodePartial(failure.partial) ? failure.partial : undefined;
+      return {
+        ...errorFields(failure, input.sessionId),
         provider: "opencode",
-        ...(failure.partial?.toolCalls ? { toolCalls: failure.partial.toolCalls } : {}),
-        ...(failure.partial?.usage ? { usage: failure.partial.usage } : {}),
-        ...(failure.partial?.summariesTruncated ? { summariesTruncated: true } : {}),
-        error: { code: failure.code, message: failure.message },
+        ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
+        ...(extra?.usage ? { usage: extra.usage } : {}),
+        ...(extra?.summariesTruncated ? { summariesTruncated: true } : {}),
       };
-      return toolResult(result, true);
-    }
+    },
   });
+
   return server;
 }

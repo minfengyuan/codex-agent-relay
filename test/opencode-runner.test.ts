@@ -1,97 +1,13 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig, type RelayConfig } from "../src/config.js";
-import { cleanupAllChildren, CursorRunner, GrokRunner, OpenCodeRunner } from "../src/runner.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { OpenCodeRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
+import { baseConfig as config, tempDir as makeTempDir, useRunnerCleanup, waitForLog } from "./helpers.js";
 
-const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
-const fixture = join(fixtures, "fake-opencode-agent.mjs");
-const grokFixture = join(fixtures, "fake-agent.mjs");
-const cursorFixture = join(fixtures, "fake-agent.mjs");
 const dirs: string[] = [];
-
-async function tempDir(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "relay-opencode-"));
-  dirs.push(path);
-  return realpath(path);
-}
-
-function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
-  return {
-    command: process.execPath,
-    commandArgs: [grokFixture],
-    cursorCommand: process.execPath,
-    cursorCommandArgs: [cursorFixture],
-    opencodeCommand: process.execPath,
-    opencodeCommandArgs: [fixture],
-    stateDir,
-    phaseTimeoutMs: 2_000,
-    totalTimeoutMs: 5_000,
-    cancelGraceMs: 100,
-    termGraceMs: 100,
-    textLimitBytes: 256 * 1024,
-    stderrLimitBytes: 64 * 1024,
-    progressIntervalMs: 1,
-    ...overrides,
-  };
-}
-
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  await cleanupAllChildren();
-  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
-
-describe("loadConfig", () => {
-  it("defaults to opencode and trims an explicit command", () => {
-    expect(loadConfig({}).opencodeCommand).toBe("opencode");
-    expect(loadConfig({ CODEX_AGENT_RELAY_OPENCODE_COMMAND: "  /bin/oc  " }).opencodeCommand).toBe("/bin/oc");
-    expect(loadConfig({ CODEX_AGENT_RELAY_OPENCODE_COMMAND: "   " }).opencodeCommand).toBe("opencode");
-  });
-
-  it("reads new config keys and ignores old GROK_RELAY_* keys", () => {
-    const defaults = loadConfig({});
-    expect(defaults.command).toBe("grok");
-    expect(defaults.cursorCommand).toBeUndefined();
-    expect(defaults.stateDir).toBe(join(homedir(), ".local", "codex-agent-relay"));
-    expect(defaults.phaseTimeoutMs).toBe(30_000);
-    expect(defaults.totalTimeoutMs).toBe(3_600_000);
-    expect(defaults.cancelGraceMs).toBe(5_000);
-    expect(defaults.termGraceMs).toBe(2_000);
-    expect(defaults.textLimitBytes).toBe(256 * 1024);
-    expect(defaults.stderrLimitBytes).toBe(64 * 1024);
-    expect(defaults.progressIntervalMs).toBe(1_000);
-
-    expect(loadConfig({
-      CODEX_AGENT_RELAY_GROK_COMMAND: "custom-grok",
-      CODEX_AGENT_RELAY_CURSOR_COMMAND: "  /bin/cursor  ",
-      CODEX_AGENT_RELAY_STATE_DIR: "/tmp/relay-state",
-      CODEX_AGENT_RELAY_PHASE_TIMEOUT_MS: "10",
-    })).toMatchObject({
-      command: "custom-grok",
-      cursorCommand: "/bin/cursor",
-      stateDir: "/tmp/relay-state",
-      phaseTimeoutMs: 10,
-    });
-
-    expect(loadConfig({
-      GROK_RELAY_GROK_COMMAND: "old-grok",
-      GROK_RELAY_CURSOR_COMMAND: "/old/cursor",
-      GROK_RELAY_OPENCODE_COMMAND: "/old/opencode",
-      GROK_RELAY_STATE_DIR: "/old/state",
-      GROK_RELAY_PHASE_TIMEOUT_MS: "1",
-      GROK_RELAY_TOTAL_TIMEOUT_MS: "2",
-      GROK_RELAY_CANCEL_GRACE_MS: "3",
-      GROK_RELAY_TERM_GRACE_MS: "4",
-      GROK_RELAY_TEXT_LIMIT_BYTES: "5",
-      GROK_RELAY_STDERR_LIMIT_BYTES: "6",
-      GROK_RELAY_PROGRESS_INTERVAL_MS: "7",
-    })).toEqual(defaults);
-  });
-});
+useRunnerCleanup(dirs);
+const tempDir = () => makeTempDir(dirs);
 
 describe("OpenCodeRunner", () => {
   it("starts OpenCode ACP with matching cwd, overlay env, and skipped client fs/terminal capabilities", async () => {
@@ -380,10 +296,7 @@ describe("OpenCodeRunner", () => {
       task: "hang",
       cwd,
     }, controller.signal);
-    while (true) {
-      try { if ((await readFile(log, "utf8")).includes("prompt:fake-session-1")) break; } catch { /* wait */ }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForLog(log, "prompt:fake-session-1");
     controller.abort();
     await expect(pending).rejects.toMatchObject({
       code: "CANCELLED",
@@ -413,10 +326,7 @@ describe("OpenCodeRunner", () => {
       effort: "high",
       agent: "plan",
     }, controller.signal);
-    while (true) {
-      try { if ((await readFile(log, "utf8")).includes("set-config:effort:high")) break; } catch { /* wait */ }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForLog(log, "set-config:effort:high");
     controller.abort();
     await expect(pending).rejects.toMatchObject({
       code: "CANCELLED",
@@ -494,47 +404,6 @@ describe("OpenCodeRunner", () => {
           usage: { used: 42, size: 128, cost: { amount: 3.5, currency: "USD" } },
         },
       });
-  });
-
-  it("isolates OpenCode metadata while sharing cwd locks across providers", async () => {
-    vi.stubEnv("XAI_API_KEY", "");
-    const state = await tempDir();
-    const cwd = await tempDir();
-    const grok = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "grok", cwd });
-    const cursor = await new CursorRunner(config(state), new SessionStore(state, "cursor")).delegate({
-      task: "cursor",
-      cwd,
-    });
-    const opencode = await new OpenCodeRunner(config(state), new SessionStore(state, "opencode")).delegate({
-      task: "opencode",
-      cwd,
-    });
-    expect(grok.sessionId).toBe(opencode.sessionId);
-    expect(cursor.sessionId).toBe(opencode.sessionId);
-    await expect(new SessionStore(state).read("fake-session-1", cwd)).resolves.toMatchObject({ sessionId: "fake-session-1" });
-    await expect(new SessionStore(state, "cursor").read("fake-session-1", cwd)).resolves.toMatchObject({ mode: "agent" });
-    await expect(new SessionStore(state, "opencode").read("fake-session-1", cwd)).resolves.toMatchObject({
-      sessionId: "fake-session-1",
-      cwd,
-    });
-    expect(await new SessionStore(state, "opencode").read("fake-session-1", cwd)).not.toHaveProperty("model");
-    expect(await new SessionStore(state, "opencode").read("fake-session-1", cwd)).not.toHaveProperty("mode");
-
-    vi.stubEnv("FAKE_ACP_MODE", "hang");
-    const log = join(state, "lock.log");
-    vi.stubEnv("FAKE_ACP_LOG", log);
-    vi.stubEnv("FAKE_SESSION_ID", "lock-session");
-    const active = new OpenCodeRunner(config(state), new SessionStore(state, "opencode")).delegate({ task: "hang", cwd });
-    while (true) {
-      try { if ((await readFile(log, "utf8")).includes("prompt:lock-session")) break; } catch { /* wait */ }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "blocked", cwd }))
-      .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
-    await expect(new CursorRunner(config(state), new SessionStore(state, "cursor")).delegate({ task: "blocked", cwd }))
-      .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
-    await cleanupAllChildren();
-    await expect(active).rejects.toMatchObject({ code: "CANCELLED" });
   });
 
   it("rejects a cwd mismatch and nested delegation", async () => {

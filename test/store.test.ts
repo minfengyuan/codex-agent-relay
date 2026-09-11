@@ -1,19 +1,14 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionStore, resolveCwd } from "../src/store.js";
 import { RelayFailure } from "../src/types.js";
+import { cleanupDirs, tempDir as makeTempDir } from "./helpers.js";
 
 const dirs: string[] = [];
-async function tempDir(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "relay-store-"));
-  dirs.push(path);
-  return path;
-}
-
-afterEach(async () => Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
+const tempDir = () => makeTempDir(dirs);
+afterEach(async () => cleanupDirs(dirs));
 
 describe("SessionStore", () => {
   it("writes private hashed records and validates cwd binding", async () => {

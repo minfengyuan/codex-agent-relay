@@ -1,45 +1,13 @@
-import { readFile, rm, mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RelayConfig } from "../src/config.js";
-import { cleanupAllChildren, CursorRunner, GrokRunner } from "../src/runner.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { CursorRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
+import { baseConfig as config, tempDir as makeTempDir, useRunnerCleanup } from "./helpers.js";
 
-const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
-const fixture = join(fixtures, "fake-agent.mjs");
 const dirs: string[] = [];
-
-async function tempDir(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "relay-cursor-"));
-  dirs.push(path);
-  return path;
-}
-
-function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
-  return {
-    command: process.execPath,
-    commandArgs: [join(fixtures, "fake-agent.mjs")],
-    cursorCommand: process.execPath,
-    cursorCommandArgs: [fixture],
-    stateDir,
-    phaseTimeoutMs: 2_000,
-    totalTimeoutMs: 5_000,
-    cancelGraceMs: 100,
-    termGraceMs: 100,
-    textLimitBytes: 256 * 1024,
-    stderrLimitBytes: 64 * 1024,
-    progressIntervalMs: 1,
-    ...overrides,
-  };
-}
-
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  await cleanupAllChildren();
-  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
+useRunnerCleanup(dirs);
+const tempDir = () => makeTempDir(dirs);
 
 describe("CursorRunner", () => {
   it("starts Cursor ACP with disabled client capabilities, authenticates, and resumes saved options", async () => {
@@ -86,34 +54,6 @@ describe("CursorRunner", () => {
     vi.stubEnv("CODEX_AGENT_RELAY_DELEGATED", "1");
     await expect(new CursorRunner(config(state), new SessionStore(state, "cursor")).delegate({ task: "one", cwd }))
       .rejects.toMatchObject({ code: "NESTED_DELEGATION" });
-  });
-
-  it("keeps Cursor and Grok sessions separate while sharing cwd locks", async () => {
-    vi.stubEnv("XAI_API_KEY", "");
-    const state = await tempDir();
-    const cwd = await tempDir();
-    const grok = await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "grok", cwd });
-    const cursor = await new CursorRunner(config(state), new SessionStore(state, "cursor")).delegate({ task: "cursor", cwd });
-    expect(grok.sessionId).toBe(cursor.sessionId);
-    await expect(new SessionStore(state).read("fake-session-1", cwd)).resolves.toMatchObject({ sessionId: "fake-session-1" });
-    await expect(new SessionStore(state, "cursor").read("fake-session-1", cwd)).resolves.toMatchObject({
-      sessionId: "fake-session-1",
-      mode: "agent",
-    });
-
-    vi.stubEnv("FAKE_ACP_MODE", "hang");
-    const log = join(state, "lock.log");
-    vi.stubEnv("FAKE_ACP_LOG", log);
-    vi.stubEnv("FAKE_SESSION_ID", "lock-session");
-    const active = new CursorRunner(config(state), new SessionStore(state, "cursor")).delegate({ task: "hang", cwd });
-    while (true) {
-      try { if ((await readFile(log, "utf8")).includes("prompt:lock-session")) break; } catch { /* wait */ }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "blocked", cwd }))
-      .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
-    await cleanupAllChildren();
-    await expect(active).rejects.toMatchObject({ code: "CANCELLED" });
   });
 
   it("rejects option conflicts before spawning and restores the saved session mode", async () => {

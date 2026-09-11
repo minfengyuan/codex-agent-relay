@@ -1,41 +1,14 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RelayConfig } from "../src/config.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { cleanupAllChildren, GrokRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
 import { RelayFailure } from "../src/types.js";
+import { backpressureFixture, baseConfig as config, tempDir as makeTempDir, useRunnerCleanup, waitForLog } from "./helpers.js";
 
-const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-agent.mjs");
-const backpressureFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "backpressure-agent.mjs");
 const dirs: string[] = [];
-async function tempDir(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "relay-runner-"));
-  dirs.push(path);
-  return path;
-}
-function config(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
-  return {
-    command: process.execPath,
-    commandArgs: [fixture],
-    stateDir,
-    phaseTimeoutMs: 2_000,
-    totalTimeoutMs: 5_000,
-    cancelGraceMs: 100,
-    termGraceMs: 100,
-    textLimitBytes: 256 * 1024,
-    stderrLimitBytes: 64 * 1024,
-    progressIntervalMs: 1,
-    ...overrides,
-  };
-}
-
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
+useRunnerCleanup(dirs);
+const tempDir = () => makeTempDir(dirs);
 
 describe("GrokRunner", () => {
   it("rejects a pre-aborted request before acquiring a lock or spawning", async () => {
@@ -237,10 +210,7 @@ describe("GrokRunner", () => {
     }
     const promise = new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "hang", cwd });
     const rejected = expect(promise).rejects.toMatchObject({ code: "LOCK_IO", partial: { sessionId: "fake-session-1" } });
-    while (true) {
-      try { if ((await readFile(log, "utf8")).includes("prompt:fake-session-1")) break; } catch { /* wait */ }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForLog(log, "prompt:fake-session-1");
     await expect(cleanupAllChildren()).resolves.toBeUndefined();
     await rejected;
   });

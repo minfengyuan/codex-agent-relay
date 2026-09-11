@@ -1,4 +1,40 @@
-export type RelayError = { code: string; message: string };
+export type RelayErrorCode =
+  | "STATE_IO"
+  | "INVALID_CWD"
+  | "UNKNOWN_SESSION"
+  | "CORRUPT_SESSION"
+  | "CWD_MISMATCH"
+  | "STATE_CONFLICT"
+  | "WORKSPACE_BUSY"
+  | "LOCK_IO"
+  | "INTERNAL"
+  | "OPENCODE_PERMISSION_INVALID"
+  | "CANCELLED"
+  | "NESTED_DELEGATION"
+  | "INVALID_INPUT"
+  | "TIMEOUT"
+  | "SPAWN_TIMEOUT"
+  | "INITIALIZE_TIMEOUT"
+  | "AUTH_TIMEOUT"
+  | "RESUME_TIMEOUT"
+  | "LOAD_TIMEOUT"
+  | "NEW_SESSION_TIMEOUT"
+  | "MODE_TIMEOUT"
+  | "CONFIG_TIMEOUT"
+  | "PROTOCOL_MISMATCH"
+  | "LOAD_UNSUPPORTED"
+  | "INVALID_SESSION"
+  | "MODE_UNAVAILABLE"
+  | "AUTH_UNAVAILABLE"
+  | "CURSOR_COMMAND_REQUIRED"
+  | "SESSION_OPTION_CONFLICT"
+  | "CONFIG_UNSUPPORTED"
+  | "INVALID_CONFIG"
+  | "PERMISSION_REQUIRED"
+  | "UNEXPECTED_PERMISSION"
+  | "ACP_FAILURE";
+
+export type RelayError = { code: RelayErrorCode; message: string };
 
 export type UsageSummary = {
   used: number;
@@ -6,21 +42,51 @@ export type UsageSummary = {
   cost?: { amount: number; currency: string };
 };
 
-export type RelayResult = {
+type RelayResultBase = {
   sessionId: string | null;
   stopReason: string | null;
   text: string;
   truncated: boolean;
-  provider?: "cursor" | "opencode";
+  error?: RelayError;
+};
+
+export type GrokRelayResult = RelayResultBase;
+
+export type CursorRelayResult = RelayResultBase & {
+  provider: "cursor";
   toolCalls?: ToolCallSummary[];
   todos?: TodoSummary[];
   subagents?: SubagentSummary[];
   interactions?: InteractionSummary[];
   images?: ImageSummary[];
+  summariesTruncated?: boolean;
+};
+
+export type OpenCodeRelayResult = RelayResultBase & {
+  provider: "opencode";
+  toolCalls?: ToolCallSummary[];
   usage?: UsageSummary;
   summariesTruncated?: boolean;
-  error?: RelayError;
 };
+
+export type RelayResult = GrokRelayResult | CursorRelayResult | OpenCodeRelayResult;
+
+export type RelayResultPartial =
+  | Partial<GrokRelayResult>
+  | Partial<CursorRelayResult>
+  | Partial<OpenCodeRelayResult>;
+
+type GrokForbiddenExtras =
+  | "provider"
+  | "toolCalls"
+  | "todos"
+  | "subagents"
+  | "interactions"
+  | "images"
+  | "usage"
+  | "summariesTruncated";
+export type _GrokRelayResultHasNoExtras = GrokForbiddenExtras & keyof GrokRelayResult extends never ? true : never;
+true satisfies _GrokRelayResultHasNoExtras;
 
 export type DelegateInput = {
   task: string;
@@ -80,9 +146,9 @@ export type ImageSummary = {
 
 export class RelayFailure extends Error {
   constructor(
-    public readonly code: string,
+    public readonly code: RelayErrorCode,
     message: string,
-    public readonly partial?: Partial<RelayResult>,
+    public readonly partial?: RelayResultPartial,
   ) {
     super(message);
     this.name = "RelayFailure";
