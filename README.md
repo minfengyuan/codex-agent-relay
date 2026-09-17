@@ -27,7 +27,7 @@ Delegate Codex tasks to **Grok**, **Cursor**, and **OpenCode** through one local
 ### 1. Prerequisites
 
 - Node.js 22+
-- pnpm 11+
+- pnpm 12+
 - At least one supported agent CLI installed and authenticated
 
 ### 2. Install and build
