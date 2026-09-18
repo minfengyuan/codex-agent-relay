@@ -134,8 +134,9 @@ describe.skipIf(process.platform === "win32")("cross-process lifecycle", () => {
     await expect(new SessionStore(state).acquire(cwd)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     holder.kill("SIGTERM");
     await waitExit(holder);
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it.each(["eof", "signal"])("cleans a running task and lock on CLI %s", async (ending) => {
@@ -148,7 +149,7 @@ describe.skipIf(process.platform === "win32")("cross-process lifecycle", () => {
     await waitForFileText(log, /prompt:fake-session-1/);
     if (ending === "eof") child.stdin.end(); else child.kill("SIGTERM");
     await waitExit(child, 5_000);
-    expect(await readdir(join(state, "locks"))).toEqual([]);
+    expect((await readdir(join(state, "locks"))).filter((entry) => entry.endsWith(".lock"))).toEqual([]);
     expect(await import("node:fs/promises").then((fs) => fs.readFile(log, "utf8"))).toContain("cancel:fake-session-1");
   });
 
@@ -168,6 +169,6 @@ describe.skipIf(process.platform === "win32")("cross-process lifecycle", () => {
     await waitExit(child, 5_000);
     const events = await import("node:fs/promises").then((fs) => fs.readFile(log, "utf8"));
     expect(events.match(/prompt:fake-session-1/g)).toHaveLength(1);
-    expect(await readdir(join(state, "locks"))).toEqual([]);
+    expect((await readdir(join(state, "locks"))).filter((entry) => entry.endsWith(".lock"))).toEqual([]);
   });
 });

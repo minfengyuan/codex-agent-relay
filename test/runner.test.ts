@@ -19,8 +19,9 @@ describe("GrokRunner", () => {
     controller.abort();
     await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "cancel", cwd }, controller.signal))
       .rejects.toMatchObject({ code: "CANCELLED" });
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("creates then resumes a session in a fresh runner and filters load history", async () => {
@@ -143,8 +144,9 @@ describe("GrokRunner", () => {
     await expect(new GrokRunner(config(state, { totalTimeoutMs: 1_000 }), new SessionStore(state)).delegate({ task: "hang", cwd }))
       .rejects.toMatchObject({ code: "TIMEOUT" });
     expect((await readFile(log, "utf8")).match(/cancel:fake-session-1/g)).toHaveLength(1);
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("bounds cancellation when the ACP stdin write queue is backpressured", async () => {
@@ -163,8 +165,9 @@ describe("GrokRunner", () => {
     expect(Date.now() - started).toBeLessThan(
       settings.totalTimeoutMs + settings.cancelGraceMs + settings.termGraceMs + settings.killConfirmMs + 500,
     );
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("tracks shutdown before a child reaches the spawn event", async () => {
@@ -172,18 +175,19 @@ describe("GrokRunner", () => {
     const state = await tempDir();
     const cwd = await tempDir();
     class SlowStore extends SessionStore {
-      override async acquire(path: string): Promise<() => Promise<void>> {
-        const release = await super.acquire(path);
+      override async acquire(path: string) {
+        const lease = await super.acquire(path);
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return release;
+        return lease;
       }
     }
     const promise = new GrokRunner(config(state), new SlowStore(state)).delegate({ task: "startup", cwd });
     const rejected = expect(promise).rejects.toMatchObject({ code: "CANCELLED" });
     await cleanupAllChildren();
     await rejected;
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("surfaces a lock release failure after cleaning the child", async () => {
@@ -191,8 +195,10 @@ describe("GrokRunner", () => {
     const state = await tempDir();
     const cwd = await tempDir();
     class BadReleaseStore extends SessionStore {
-      override async acquire(): Promise<() => Promise<void>> {
-        return async () => { throw new RelayFailure("LOCK_IO", "release failed"); };
+      override async acquire(path: string) {
+        const lease = await super.acquire(path);
+        lease.release = async () => { throw new RelayFailure("LOCK_IO", "release failed"); };
+        return lease;
       }
     }
     await expect(new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "release", cwd }))
@@ -207,8 +213,10 @@ describe("GrokRunner", () => {
     const log = join(state, "release-cleanup.log");
     vi.stubEnv("FAKE_ACP_LOG", log);
     class BadReleaseStore extends SessionStore {
-      override async acquire(): Promise<() => Promise<void>> {
-        return async () => { throw new RelayFailure("LOCK_IO", "release failed during shutdown"); };
+      override async acquire(path: string) {
+        const lease = await super.acquire(path);
+        lease.release = async () => { throw new RelayFailure("LOCK_IO", "release failed during shutdown"); };
+        return lease;
       }
     }
     const promise = new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "hang", cwd });
@@ -235,8 +243,9 @@ describe("GrokRunner", () => {
     const cwd = await tempDir();
     await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "exit", cwd }))
       .rejects.toMatchObject({ code: "ACP_FAILURE" });
-    const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state).acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it.each(["malformed"])("reports %s child failure without claiming Windows cleanup success", async (mode) => {
@@ -263,10 +272,12 @@ describe("GrokRunner", () => {
     const first = (await readFile(output, "utf8")).length;
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect((await readFile(output, "utf8")).length).toBe(first);
-    await lease();
+    await lease.markReaped("no-worker-created");
+    await lease.release();
     expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
     const release = await new SessionStore(state).acquire(cwd);
-    await release();
+    await release.markReaped("no-worker-created");
+    await release.release();
   });
 
   it("rejects an unexpected permission request and keeps the session id", async () => {

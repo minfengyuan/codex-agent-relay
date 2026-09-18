@@ -22,12 +22,20 @@ export interface ProcessTreeController {
   terminate(): Promise<TerminationReport>;
 }
 
+export type ProcessProbe = "alive" | "gone" | "unknown";
+
+export function probeProcess(pid: number): ProcessProbe {
+  return probePid(pid);
+}
+
+export function probePosixProcessGroup(pgid: number): ProcessProbe {
+  return probePid(-pgid);
+}
+
 type ControllerOptions = {
   termGraceMs: number;
   killConfirmMs: number;
 };
-
-type ProbeResult = "alive" | "gone" | "unknown";
 
 export function processTreeSpawnOptions(): Pick<SpawnOptionsWithoutStdio, "detached"> {
   return { detached: process.platform !== "win32" };
@@ -104,13 +112,17 @@ async function terminatePosix(
   };
 }
 
-function probePosixGroup(group: number): ProbeResult {
+function probePid(pid: number): ProcessProbe {
   try {
-    process.kill(group, 0);
+    process.kill(pid, 0);
     return "alive";
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
   }
+}
+
+function probePosixGroup(group: number): ProcessProbe {
+  return probePid(group);
 }
 
 function signalPosixGroup(group: number, signal: NodeJS.Signals): "gone" | string | undefined {

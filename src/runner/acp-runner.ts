@@ -2,7 +2,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import type { RelayConfig } from "../config.js";
-import type { SessionStore } from "../store.js";
+import type { SessionStore, WorkspaceLease } from "../store.js";
 import { RelayFailure, type DelegateInput, type RelayResult } from "../types.js";
 import { abortFailure, hasLoadCapability } from "./helpers.js";
 import { appendLimited, boundedString, withTimeout } from "./limits.js";
@@ -33,7 +33,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     this.adapter.validateInput?.(input);
     if (signal?.aborted) abortFailure(signal);
     const cwd = input.cwd;
-    let release: (() => Promise<void>) | undefined;
+    let lease: WorkspaceLease | undefined;
     let sessionId: string | null = input.sessionId ?? null;
     let text = "";
     let truncated = false;
@@ -48,8 +48,8 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     let operation: Promise<string> | undefined;
     let completedResult: R | undefined;
     let pendingError: RelayFailure | undefined;
-    let releaseError: unknown;
     let cleanupReport: TerminationReport | undefined;
+    const leaseErrors: RelayFailure[] = [];
     const summarizer = this.adapter.createSummarizer(Math.max(64 * 1_024, this.config.textLimitBytes));
     const partial = (): Partial<R> => ({
       sessionId,
@@ -78,13 +78,19 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     if (signal?.aborted) onCallerAbort();
 
     try {
-      release = await this.store.acquire(cwd);
+      lease = await this.store.acquire(cwd);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const record = input.sessionId ? await this.store.read(input.sessionId, cwd) : undefined;
       const metadata = this.adapter.sessionMetadata(input, record);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const invocation = this.adapter.command(input, record);
       const childEnv = { ...process.env, CODEX_AGENT_RELAY_DELEGATED: "1" };
+      try { await lease.markSpawning(); } catch (error) {
+        const failure = asLeaseFailure(error, "Cannot persist spawning workspace lease state");
+        leaseErrors.push(failure);
+        throw failure;
+      }
+      if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       worker.state = "pending";
       try {
         child = spawn(invocation.command, invocation.args, {
@@ -102,6 +108,13 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         termGraceMs: this.config.termGraceMs,
         killConfirmMs: this.config.killConfirmMs,
       });
+      const spawned = new Promise<void>((resolve, reject) => {
+        child?.once("spawn", () => { worker.state = "created"; resolve(); });
+        child?.once("error", (error) => {
+          worker.state = processTree?.reference() ? "created" : "failed";
+          reject(error);
+        });
+      });
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
         const joined = stderr + chunk;
@@ -110,13 +123,14 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
           ? bytes.subarray(bytes.length - this.config.stderrLimitBytes).toString("utf8")
           : joined;
       });
-      await withTimeout(new Promise<void>((resolve, reject) => {
-        child?.once("spawn", () => { worker.state = "created"; resolve(); });
-        child?.once("error", (error) => {
-          worker.state = processTree?.reference() ? "created" : "failed";
-          reject(error);
-        });
-      }), this.config.phaseTimeoutMs, "SPAWN_TIMEOUT", `Timed out starting ${this.adapter.displayName}`);
+      await withTimeout(spawned, this.config.phaseTimeoutMs, "SPAWN_TIMEOUT", `Timed out starting ${this.adapter.displayName}`);
+      const workerReference = processTree.reference();
+      if (!workerReference) throw new RelayFailure("LOCK_IO", "Spawned worker has no process-tree reference");
+      try { await lease.bindWorker(workerReference); } catch (error) {
+        const failure = asLeaseFailure(error, "Cannot persist running workspace lease state");
+        leaseErrors.push(failure);
+        throw failure;
+      }
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
 
       let clientContext: acp.ClientContext | undefined;
@@ -297,7 +311,8 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
           "ACP_FAILURE",
           `${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}${stderr ? `; ${this.adapter.displayName} stderr: ${stderr}` : ""}`,
         );
-      pendingError = new RelayFailure(failure.code, failure.message, {
+      pendingError = new RelayFailure(failure.code, boundedString(failure.message,
+        Math.min(this.config.stderrLimitBytes, 8 * 1_024)), {
         ...partial(),
         ...(failure.partial ?? {}),
       } as Partial<R>);
@@ -305,6 +320,11 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       clearTimeout(totalTimer);
       signal?.removeEventListener("abort", onCallerAbort);
       try {
+        if (lease) {
+          try { await lease.markTerminating(); } catch (error) {
+            leaseErrors.push(asLeaseFailure(error, "Cannot persist terminating workspace lease state"));
+          }
+        }
         if (worker.state === "created" || worker.state === "pending") {
           try {
             cleanupReport = processTree
@@ -314,11 +334,24 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
             cleanupReport = { forced: false, confirmed: false, reason: String(error) };
           }
         }
-        if (worker.state === "not-attempted" || worker.state === "failed" || cleanupReport?.confirmed) {
+        const noWorkerCreated = worker.state === "not-attempted" || worker.state === "failed";
+        const cleanupConfirmed = noWorkerCreated || cleanupReport?.confirmed === true;
+        if (lease && cleanupConfirmed) {
+          let reaped = false;
           try {
-            await release?.();
+            await lease.markReaped(noWorkerCreated ? "no-worker-created" : "tree-exit-confirmed");
+            reaped = true;
           } catch (error) {
-            releaseError = error;
+            leaseErrors.push(asLeaseFailure(error, "Cannot persist reaped workspace lease state"));
+          }
+          if (reaped) {
+            try { await lease.release(); } catch (error) {
+              leaseErrors.push(asLeaseFailure(error, "Cannot release workspace lease"));
+            }
+          }
+        } else if (lease && !cleanupConfirmed) {
+          try { await lease.markOrphaned(); } catch (error) {
+            leaseErrors.push(asLeaseFailure(error, "Cannot persist orphaned workspace lease state"));
           }
         }
       } finally {
@@ -327,7 +360,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       }
     }
     if ((worker.state === "created" || worker.state === "pending") && !cleanupReport?.confirmed) {
-      const prior = pendingError ? `; original error ${pendingError.code}: ${pendingError.message}` : "";
+      const prior = diagnosticSuffix(pendingError, leaseErrors);
       throw new RelayFailure(
         "PROCESS_CLEANUP_FAILED",
         boundedString(
@@ -337,11 +370,14 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         { ...partial(), ...(pendingError?.partial ?? {}) } as Partial<R>,
       );
     }
-    if (releaseError) {
-      const failure = releaseError instanceof RelayFailure
-        ? releaseError
-        : new RelayFailure("LOCK_IO", `Cannot release cwd lock: ${String(releaseError)}`);
-      throw new RelayFailure(failure.code, failure.message, partial());
+    if (leaseErrors.length > 0) {
+      const failure = leaseErrors.find((candidate) => candidate.code === "LOCK_OWNERSHIP_LOST") ?? leaseErrors[0] as RelayFailure;
+      throw new RelayFailure(
+        failure.code,
+        boundedString(`${failure.message}${diagnosticSuffix(pendingError, leaseErrors.filter((item) => item !== failure))}`,
+          Math.min(this.config.stderrLimitBytes, 8 * 1_024)),
+        { ...partial(), ...(pendingError?.partial ?? {}) } as Partial<R>,
+      );
     }
     if (pendingError) throw pendingError;
     if (!completedResult) throw new RelayFailure("INTERNAL", `${this.adapter.displayName} task ended without a result`, partial());
@@ -369,6 +405,20 @@ async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promi
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function asLeaseFailure(error: unknown, context: string): RelayFailure {
+  if (error instanceof RelayFailure
+    && (error.code === "LOCK_IO" || error.code === "LOCK_OWNERSHIP_LOST")) return error;
+  return new RelayFailure("LOCK_IO", `${context}: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+function diagnosticSuffix(primary: RelayFailure | undefined, leaseErrors: RelayFailure[]): string {
+  const diagnostics = [
+    ...(primary ? [`original error ${primary.code}: ${primary.message}`] : []),
+    ...leaseErrors.map((failure) => `lease error ${failure.code}: ${failure.message}`),
+  ];
+  return diagnostics.length > 0 ? `; ${diagnostics.join("; ")}` : "";
 }
 
 export async function cleanupAllChildren(): Promise<void> {

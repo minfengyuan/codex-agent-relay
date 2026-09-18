@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { createRelayServer } from "../src/server.js";
+import { SessionStore } from "../src/store.js";
+import { RelayFailure } from "../src/types.js";
 import { grokFixture } from "./helpers.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -39,6 +42,20 @@ async function harness(overrides: Partial<ReturnType<typeof loadConfig>> = {}) {
 }
 
 describe("MCP server", () => {
+  it.each(["WORKSPACE_ORPHANED", "STALE_LOCK_UNVERIFIED", "LOCK_OWNERSHIP_LOST"] as const)(
+    "preserves %s in matching text and structured errors", async (code) => {
+      vi.spyOn(SessionStore.prototype, "acquire").mockRejectedValue(new RelayFailure(code, "lease failure"));
+      const { server, clientTransport, request } = await harness();
+      try {
+        const response = await request(3, "tools/call", {
+          name: "grok_delegate", arguments: { task: "test", cwd: process.cwd() },
+        }) as { result?: { isError?: boolean; content?: Array<{ text?: string }>; structuredContent?: unknown } };
+        expect(response.result?.isError).toBe(true);
+        expect(response.result?.structuredContent).toMatchObject({ error: { code } });
+        expect(JSON.parse(response.result?.content?.[0]?.text ?? "null")).toEqual(response.result?.structuredContent);
+      } finally { await clientTransport.close(); await server.close(); }
+    },
+  );
   it("discovers Grok, Cursor, and OpenCode delegation with their input contracts", async () => {
     const { server, clientTransport, request, init } = await harness();
     expect(init).toHaveProperty("result.serverInfo.name", "codex-agent-relay");

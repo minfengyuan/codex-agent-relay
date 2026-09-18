@@ -110,12 +110,14 @@ The store has two separate responsibilities.
 
 **Workspace serialization**
 
-- The real/resolved `cwd` is hashed into a lock filename.
-- Lock creation uses exclusive file creation.
-- If the lock already exists, the request fails with `WORKSPACE_BUSY`; it does not queue inside the relay.
+- The real/resolved `cwd` is hashed into a private `<hash>.lock/` directory created with non-recursive `mkdir` as the atomic acquisition step.
+- `owner.json` records a random owner token, hostname, relay PID, lifecycle phase, and the bound process-tree reference. Lease transitions validate the token, serialize updates, reject state regression, and release only from `reaped`.
+- Release and stale recovery rename the lock directory to a permanent, nonempty `<hash>.retired.<old-token>/` tombstone. The old token in the target makes concurrent reclaimers fail safely instead of moving or deleting a newer generation.
+- Existing records are read with a 16 KiB limit and strict schema validation. Symlinks, empty/corrupt records, unknown formats, mismatched hosts/platforms, and uncertain process probes fail closed.
+- A live owner returns `WORKSPACE_BUSY`. A dead owner is reclaimed only for `reaped`, pre-spawn `locked`, or a POSIX worker whose process group is confirmed gone. Unsafe crash states return `WORKSPACE_ORPHANED`; legacy stale locks return `STALE_LOCK_UNVERIFIED`.
 - Independent working directories can run concurrently.
 
-The session-record format is persistent state. If its schema changes, decide explicitly whether to preserve `version: 1`, accept older records, migrate them, or introduce a new version.
+Session records and workspace lease records are persistent state. Lease version 1 intentionally does not migrate legacy file locks automatically because those records cannot prove descendant cleanup. Do not mix relay versions against one state directory.
 
 ## Request and result flow
 
@@ -143,7 +145,7 @@ MCP request
   │
   ├─ result or RelayFailure + partial result
   │
-  └─ child cleanup + lock release
+  └─ mark terminating → child cleanup → mark reaped → retire lease
        ▼
 structured MCP result
 ```
@@ -202,7 +204,9 @@ The runner first attempts the ACP session-cancel notification when possible, wai
 
 On POSIX systems the provider is spawned in its own process group. Cleanup sends group-level `SIGTERM`, escalates to `SIGKILL`, and confirms both group disappearance and direct-child exit; processes that escape the original group are outside this guarantee. Windows invokes the absolute `%SystemRoot%\System32\taskkill.exe` path with `/T /F`, without a shell, and confirms both a successful helper exit and direct-child exit. This is confirmation of the `taskkill` operation, not Job Object or crash-proof containment. A Windows root that exits before tree termination is conservatively unconfirmed because the relay can no longer establish descendant cleanup.
 
-If process-tree cleanup is unconfirmed, the runner returns `PROCESS_CLEANUP_FAILED`, preserves partial task output, and leaves the existing `cwd` lock in place. The current lock format does not mark or automatically recover this state; later requests continue to receive `WORKSPACE_BUSY`.
+If process-tree cleanup is unconfirmed, the runner returns `PROCESS_CLEANUP_FAILED`, preserves partial task output, and attempts to mark the lease `orphaned` without releasing it. Metadata failures never skip actual process cleanup. Once cleanup is confirmed, the runner must persist `reaped` before it can retire the lease. Error precedence is cleanup failure, then lease ownership/I/O failure, then the original task failure.
+
+Crash recovery is deliberately conservative. Automatic recovery requires the same hostname and a compatible process-tree kind; records without a worker reference assume that the same hostname is also the same OS and PID namespace. The protocol does not provide Job Object containment, durable-write guarantees across power loss, or safe recovery from copied/manually edited state. Retired tombstones are not removed during normal startup and may be cleaned only offline.
 
 `cleanupAllChildren()` remains the process-wide safety net used by `src/cli.ts` and tests. Making cleanup unavoidable after CLI close failures and aggregating process-wide cleanup errors are separate shutdown-boundary work, not part of this lifecycle change.
 

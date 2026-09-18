@@ -113,8 +113,12 @@ Codex 决定集成、修正或继续追问
 - 委派前请先完成对应 Agent CLI 的认证，不要把凭据放入任务参数。
 - relay 不负责创建 worktree，也不会自动接受 Agent 产生的修改。
 - 文件系统、网络访问和权限行为最终取决于所选 Agent 及其本地配置。
-- relay 会按进程树终止委派 worker。若无法确认清理完成，将返回 `PROCESS_CLEANUP_FAILED` 并保留现有工作目录锁；此后该目录上的调用会返回 `WORKSPACE_BUSY`。当前锁格式不负责自动恢复这类保守保留的锁。
+- relay 会按进程树终止委派 worker。若无法确认清理完成，将返回 `PROCESS_CLEANUP_FAILED`，并在可能时把 workspace lease 标记为 orphaned 后继续保锁。owner 存活时后续调用返回 `WORKSPACE_BUSY`；owner 死亡后仍无法确认 worker 清理时返回 `WORKSPACE_ORPHANED`。
 - Windows 使用绝对路径 `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F`。该确认仅针对这次操作结果，不等同于 Job Object 或防崩溃进程容器。如果根进程在树级终止开始前已经退出，relay 无法确认后代清理，会保留锁。POSIX 清理范围仅覆盖 worker 的原始进程组。
+- workspace 锁现在是包含 owner token 和生命周期状态的私有 lease 目录。新 relay 只自动恢复能够安全确认的状态：已 reaped、尚未开始 spawn，或旧 owner 已死亡且记录的 POSIX 进程组也已消失。存活 owner 仍返回 `WORKSPACE_BUSY`；旧格式锁、无法确认的 owner 探测以及来自其他主机或平台的锁都会保守失败。Windows 的非 reaped worker 即使根 PID 已消失也仍视为 orphaned，因为这不能证明后代已经退出。
+- 升级时不要让新旧 relay 共用同一个状态目录并行运行。对于没有 worker 引用的 spawn 前记录，恢复逻辑假设相同 hostname 也代表相同 OS 和 PID namespace；复制状态目录会破坏该假设。lease 协议会保守处理崩溃，但不承诺在存储丢失、断电或人工修改状态后无人值守恢复。
+- 状态目录必须使用同一主机、同一 PID namespace 内的本地文件系统。`STALE_LOCK_UNVERIFIED` 表示记录或 owner 无法安全验证；`WORKSPACE_ORPHANED` 表示已死亡 owner 的 worker 可能仍存活；`LOCK_OWNERSHIP_LOST` 表示 lease 不再拥有磁盘锁。旧格式锁文件只读识别，不自动迁移或删除。
+- 人工恢复前，先停止所有使用该状态目录的 relay，并独立确认记录的 worker 及其后代已经退出，然后才能删除对应的 `.lock` 目录。带 token 的 retired tombstone 用于阻止 ABA 竞争，正常运行期间会永久保留；只能在所有 relay 停止时离线清理。
 - Agent 返回的结果应视为待审查工作；合并前应检查实际 diff，并运行必要测试。
 
 ## 开发

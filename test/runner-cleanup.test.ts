@@ -76,9 +76,11 @@ describe("AcpRunner cleanup failure", () => {
     const cwd = await tempDir(dirs);
     let releaseCalls = 0;
     class CountingStore extends SessionStore {
-      override async acquire(path: string): Promise<() => Promise<void>> {
-        const release = await super.acquire(path);
-        return async () => { releaseCalls += 1; await release(); };
+      override async acquire(path: string) {
+        const lease = await super.acquire(path);
+        const release = lease.release.bind(lease);
+        lease.release = async () => { releaseCalls += 1; await release(); };
+        return lease;
       }
     }
     await expect(new GrokRunner(baseConfig(stateDir), new CountingStore(stateDir)).delegate({ task: "ok", cwd }))

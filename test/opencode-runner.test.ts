@@ -308,8 +308,9 @@ describe("OpenCodeRunner", () => {
     expect(events).toContain('permission-response:{"outcome":{"outcome":"cancelled"}}');
     expect(events).not.toContain('"outcome":"selected"');
     expect(events).not.toContain("allow-once-actual");
-    const release = await store.acquire(cwd);
-    await release();
+    const lease = await store.acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("does not send later OpenCode config options after abort between steps", async () => {
@@ -338,8 +339,9 @@ describe("OpenCodeRunner", () => {
     expect(events).toContain("set-config:effort:high");
     expect(events).not.toContain("set-config:mode:");
     expect(events).not.toContain("prompt:");
-    const release = await store.acquire(cwd);
-    await release();
+    const lease = await store.acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("cancels a permission request from another session without approving it", async () => {
@@ -438,8 +440,9 @@ describe("OpenCodeRunner", () => {
     await expect(new OpenCodeRunner(config(state, { totalTimeoutMs: 1_500 }), new SessionStore(state, "opencode"))
       .delegate({ task: "hang", cwd })).rejects.toMatchObject({ code: "TIMEOUT" });
     expect(await readFile(hangLog, "utf8")).toContain("cancel:fake-session-1");
-    const release = await new SessionStore(state, "opencode").acquire(cwd);
-    await release();
+    const lease = await new SessionStore(state, "opencode").acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
 
     vi.stubEnv("FAKE_ACP_MODE", "descendant");
     vi.stubEnv("FAKE_SESSION_ID", "descendant-session");

@@ -85,9 +85,11 @@ describe("SessionStore", () => {
     const releaseA = await one.acquire(a);
     await expect(two.acquire(a)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     const releaseB = await two.acquire(b);
-    await releaseB();
-    await releaseA();
-    await expect(two.acquire(a)).resolves.toBeTypeOf("function");
+    await releaseB.markReaped("no-worker-created");
+    await releaseB.release();
+    await releaseA.markReaped("no-worker-created");
+    await releaseA.release();
+    await expect(two.acquire(a)).resolves.toMatchObject({ release: expect.any(Function) });
   });
 });
 
