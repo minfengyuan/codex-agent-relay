@@ -19,7 +19,12 @@ export async function tempDir(dirs: string[], prefix = "relay-"): Promise<string
 }
 
 export async function cleanupDirs(dirs: string[]): Promise<void> {
-  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(dirs.splice(0).map((path) => rm(path, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 50,
+  })));
 }
 
 export function baseConfig(stateDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
@@ -43,19 +48,24 @@ export function baseConfig(stateDir: string, overrides: Partial<RelayConfig> = {
   };
 }
 
-export async function waitForLog(path: string, needle: string): Promise<void> {
-  while (true) {
+export async function waitForLog(path: string, needle: string, timeoutMs = 6_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
       if ((await readFile(path, "utf8")).includes(needle)) return;
     } catch { /* wait */ }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  throw new Error(`Timed out waiting for ${JSON.stringify(needle)} in ${path}`);
 }
 
 export function useRunnerCleanup(dirs: string[]): void {
   afterEach(async () => {
     vi.unstubAllEnvs();
-    await cleanupAllChildren();
-    await cleanupDirs(dirs);
+    try {
+      await cleanupAllChildren();
+    } finally {
+      await cleanupDirs(dirs);
+    }
   });
 }

@@ -106,7 +106,8 @@ describe("AcpRunner cleanup failure", () => {
     await expect(new SessionStore(stateDir).acquire(cwd)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
   });
 
-  it("shares cancellation between caller abort and global shutdown while retaining the lock", async () => {
+  it.each(["unconfirmed", "throw"] as const)("shares cancellation with shutdown and retains the lock when termination is %s", async (mode) => {
+    state.report = mode;
     const { GrokRunner, cleanupAllChildren } = await import("../src/runner.js");
     const { SessionStore } = await import("../src/store.js");
     const { baseConfig, tempDir, waitForLog } = await import("./helpers.js");
@@ -118,9 +119,14 @@ describe("AcpRunner cleanup failure", () => {
     vi.stubEnv("FAKE_ACP_LOG", log);
     const abort = new AbortController();
     const pending = new GrokRunner(baseConfig(stateDir), new SessionStore(stateDir)).delegate({ task: "hang", cwd }, abort.signal);
+    void pending.catch(() => undefined);
     await waitForLog(log, "prompt:fake-session-1");
     abort.abort();
-    await cleanupAllChildren();
+    await expect(cleanupAllChildren()).rejects.toMatchObject({
+      name: "CleanupAggregateError",
+      primaryCode: "PROCESS_CLEANUP_FAILED",
+      failureCount: 1,
+    });
     await expect(pending).rejects.toMatchObject({ code: "PROCESS_CLEANUP_FAILED" });
     expect((await (await import("node:fs/promises")).readFile(log, "utf8")).match(/cancel:fake-session-1/g)).toHaveLength(1);
     expect(state.actualCalls).toBe(1);

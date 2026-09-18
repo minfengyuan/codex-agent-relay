@@ -10,7 +10,7 @@ The relay sits between **Codex/MCP** and locally installed **ACP coding-agent CL
 Codex
   │ MCP over stdio
   ▼
-src/cli.ts
+src/cli.ts → src/cli-runtime.ts
   ▼
 src/server.ts
   │ validated delegate request
@@ -28,14 +28,15 @@ The relay is an orchestration boundary, not a second autonomous planner. Codex c
 
 ## Layer boundaries
 
-### `src/cli.ts`: process boundary
+### `src/cli.ts` and `src/cli-runtime.ts`: process boundary
 
 Responsibilities:
 
-- Load environment-derived configuration.
-- Start the MCP server on stdio.
-- React to `SIGINT`, `SIGTERM`, `SIGHUP`, and stdin closure.
-- Close the MCP transport and ask the runner layer to clean up all active children before process exit.
+- `src/cli.ts` loads environment-derived configuration and enters the runtime.
+- The runtime starts the MCP server on stdio and owns the testable shutdown coordinator.
+- `SIGINT`, `SIGTERM`, `SIGHUP`, and stdin EOF synchronously close the runner admission gate and share one shutdown operation.
+- MCP transport close has a fixed five-second timeout and runs in parallel with mandatory runner cleanup. Cleanup has no global timeout.
+- Exit waits for every snapshotted task's process and lease finalization. A clean close exits `0`; transport, cleanup, lease, or shutdown-reporting failures exit `1` with bounded stderr diagnostics.
 
 Do not move provider behavior here.
 
@@ -208,7 +209,11 @@ If process-tree cleanup is unconfirmed, the runner returns `PROCESS_CLEANUP_FAIL
 
 Crash recovery is deliberately conservative. Automatic recovery requires the same hostname and a compatible process-tree kind; records without a worker reference assume that the same hostname is also the same OS and PID namespace. The protocol does not provide Job Object containment, durable-write guarantees across power loss, or safe recovery from copied/manually edited state. Retired tombstones are not removed during normal startup and may be cleaned only offline.
 
-`cleanupAllChildren()` remains the process-wide safety net used by `src/cli.ts` and tests. Making cleanup unavoidable after CLI close failures and aggregating process-wide cleanup errors are separate shutdown-boundary work, not part of this lifecycle change.
+`cleanupAllChildren()` snapshots the currently registered tasks, requests all cancellations in parallel, waits for their process-tree and lease-finalization reports, and throws a bounded `CleanupAggregateError` when any final cleanup is unconfirmed. Ordinary task failures and transient cancellation errors do not make shutdown fail when final cleanup succeeds. The reusable function does not close admission.
+
+`beginRunnerShutdown()` is the CLI boundary: it synchronously closes the process-wide admission gate, immediately snapshots active tasks through `cleanupAllChildren()`, and caches that exact result for every later caller. A request that was still resolving its `cwd` before shutdown is rejected by the runner before lock acquisition or spawn. The gate remains closed for the process lifetime.
+
+The CLI starts transport close and runner shutdown together. Transport exceptions and timeouts cannot skip worker cleanup, and repeated signals or EOF reuse the same coordinator promise. SDK errors reported during shutdown count as close failures even if `close()` resolves. Shutdown diagnostics remain on stderr and are bounded to 8 KiB; stdout remains reserved for MCP traffic. There is deliberately no global cleanup deadline, so an indefinitely blocked filesystem operation can keep the process alive rather than exit before lease state is safe.
 
 ## Error model
 

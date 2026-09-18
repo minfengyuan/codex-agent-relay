@@ -222,7 +222,11 @@ describe("GrokRunner", () => {
     const promise = new GrokRunner(config(state), new BadReleaseStore(state)).delegate({ task: "hang", cwd });
     const rejected = expect(promise).rejects.toMatchObject({ code: "LOCK_IO", partial: { sessionId: "fake-session-1" } });
     await waitForLog(log, "prompt:fake-session-1");
-    await expect(cleanupAllChildren()).resolves.toBeUndefined();
+    await expect(cleanupAllChildren()).rejects.toMatchObject({
+      name: "CleanupAggregateError",
+      primaryCode: "LOCK_IO",
+      failureCount: 1,
+    });
     await rejected;
   });
 

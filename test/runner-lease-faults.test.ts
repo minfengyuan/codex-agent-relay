@@ -7,12 +7,13 @@ import type * as ProcessTree from "../src/runner/process-tree.js";
 import { SessionStore, type WorkspaceLease } from "../src/store.js";
 import { RelayFailure } from "../src/types.js";
 import { GrokRunner, cleanupAllChildren } from "../src/runner.js";
-import { baseConfig, cleanupDirs, tempDir } from "./helpers.js";
+import { baseConfig, cleanupDirs, tempDir, waitForLog } from "./helpers.js";
 
 const state = vi.hoisted(() => ({
   children: [] as ChildProcessWithoutNullStreams[],
   reports: [] as boolean[],
   unconfirmed: false,
+  rejectCancelOnce: false,
 }));
 vi.mock("../src/runner/process-tree.js", async (original) => {
   const actual = await original<typeof ProcessTree>();
@@ -20,16 +21,22 @@ vi.mock("../src/runner/process-tree.js", async (original) => {
     state.children.push(args[0]);
     const real = actual.createProcessTreeController(...args);
     let pending: Promise<ProcessTree.TerminationReport> | undefined;
-    return { reference: real.reference, terminate: () => pending ??= (async () => {
+    return { reference: real.reference, terminate: () => {
+      if (state.rejectCancelOnce) {
+        state.rejectCancelOnce = false;
+        return Promise.reject(new Error("injected transient cancellation failure"));
+      }
+      return pending ??= (async () => {
       const result = await real.terminate(); state.reports.push(result.confirmed);
       return state.unconfirmed ? { ...result, confirmed: false, reason: "injected uncertainty" } : result;
-    })() };
+      })();
+    } };
   } };
 });
 const dirs: string[] = [];
 vi.setConfig({ testTimeout: 15_000 });
 afterEach(async () => {
-  await cleanupAllChildren();
+  const cleanupFailure = await cleanupAllChildren().then(() => undefined, (error: unknown) => error);
   for (const child of state.children.splice(0)) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
     await new Promise<void>((resolve, reject) => {
@@ -39,9 +46,11 @@ afterEach(async () => {
   }
   const reports = state.reports.splice(0);
   state.unconfirmed = false;
+  state.rejectCancelOnce = false;
   vi.unstubAllEnvs();
   await cleanupDirs(dirs);
   expect(reports.every(Boolean)).toBe(true);
+  if (cleanupFailure) throw cleanupFailure;
 });
 
 class FaultStore extends SessionStore {
@@ -72,6 +81,41 @@ async function setup(fail: keyof WorkspaceLease, onFailure?: () => void) {
 }
 
 describe("runner lease persistence faults", () => {
+  it("accepts final confirmed cleanup after an observed cancellation rejection", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "hang"); vi.stubEnv("XAI_API_KEY", "");
+    const root = await tempDir(dirs), cwd = await tempDir(dirs), log = join(root, "retry-cancel.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const task = new GrokRunner(baseConfig(root), new SessionStore(root)).delegate({ task: "hang", cwd });
+    const outcome = task.catch((error: unknown) => error);
+    await waitForLog(log, "prompt:fake-session-1");
+    state.rejectCancelOnce = true;
+    await expect(cleanupAllChildren()).resolves.toBeUndefined();
+    expect(await outcome).toMatchObject({ code: "CANCELLED" });
+    expect(state.reports).toEqual([true]);
+    const lease = await new SessionStore(root).acquire(cwd);
+    await lease.markReaped("no-worker-created"); await lease.release();
+  });
+  it.each(["markTerminating", "markReaped", "release", "markOrphaned"] as const)(
+    "reports global cleanup failure after %s fails while still reaping the real worker", async (method) => {
+      vi.stubEnv("FAKE_ACP_MODE", "hang");
+      const s = await setup(method);
+      const log = join(s.root, "shutdown-fault.log"); vi.stubEnv("FAKE_ACP_LOG", log);
+      state.unconfirmed = method === "markOrphaned";
+      const task = s.runner.delegate({ task: "hang", cwd: s.cwd });
+      const outcome = task.catch((error: unknown) => error);
+      await waitForLog(log, "prompt:fake-session-1");
+      const code = state.unconfirmed ? "PROCESS_CLEANUP_FAILED" : "LOCK_IO";
+      const aggregate = await cleanupAllChildren().catch((error: unknown) => error);
+      expect(aggregate).toMatchObject({ primaryCode: code, taskCount: 1, failureCount: 1,
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: "LOCK_IO", message: expect.stringContaining(method) })]),
+      });
+      expect(await outcome).toMatchObject({ code });
+      expect(state.reports).toEqual([true]);
+      if (method !== "markTerminating") {
+        await expect(new SessionStore(s.root).acquire(s.cwd)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+      }
+    },
+  );
   it("does not spawn when markSpawning fails, even if cancellation arrives simultaneously", async () => {
     const abort = new AbortController();
     const s = await setup("markSpawning", () => abort.abort());
