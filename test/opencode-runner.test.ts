@@ -6,6 +6,7 @@ import { SessionStore } from "../src/store.js";
 import { baseConfig as config, tempDir as makeTempDir, useRunnerCleanup, waitForLog } from "./helpers.js";
 
 const dirs: string[] = [];
+vi.setConfig({ testTimeout: 15_000 });
 useRunnerCleanup(dirs);
 const tempDir = () => makeTempDir(dirs);
 
@@ -450,12 +451,15 @@ describe("OpenCodeRunner", () => {
     expect(() => process.kill(Number(match?.[1]), 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
   });
 
-  it.each(["exit", "malformed"])("turns %s child failure into an ACP error", async (mode) => {
+  it.each(["exit", "malformed"])("reports %s child failure without claiming Windows cleanup success", async (mode) => {
     vi.stubEnv("FAKE_ACP_MODE", mode);
     const state = await tempDir();
     const cwd = await tempDir();
     await expect(new OpenCodeRunner(config(state), new SessionStore(state, "opencode")).delegate({ task: mode, cwd }))
-      .rejects.toMatchObject({ code: "ACP_FAILURE" });
+      .rejects.toMatchObject({ code: process.platform === "win32" ? "PROCESS_CLEANUP_FAILED" : "ACP_FAILURE" });
+    if (process.platform === "win32") {
+      await expect(new SessionStore(state).acquire(cwd)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+    }
   });
 });
 

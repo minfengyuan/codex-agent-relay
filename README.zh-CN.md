@@ -62,6 +62,8 @@ CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 
 如有需要，也可以通过 `CODEX_AGENT_RELAY_GROK_COMMAND` 和 `CODEX_AGENT_RELAY_OPENCODE_COMMAND` 覆盖 Grok / OpenCode 的可执行文件路径。
 
+进程清理可通过以下毫秒配置调整：`CODEX_AGENT_RELAY_CANCEL_GRACE_MS`（ACP 取消宽限）、`CODEX_AGENT_RELAY_TERM_GRACE_MS`（POSIX `SIGTERM` 宽限）和 `CODEX_AGENT_RELAY_KILL_CONFIRM_MS`（强制终止确认，默认 `2000`）。非法值或非正数会回退到默认值。
+
 ### 4. 可选：安装推荐委派规则
 
 ```bash
@@ -111,6 +113,8 @@ Codex 决定集成、修正或继续追问
 - 委派前请先完成对应 Agent CLI 的认证，不要把凭据放入任务参数。
 - relay 不负责创建 worktree，也不会自动接受 Agent 产生的修改。
 - 文件系统、网络访问和权限行为最终取决于所选 Agent 及其本地配置。
+- relay 会按进程树终止委派 worker。若无法确认清理完成，将返回 `PROCESS_CLEANUP_FAILED` 并保留现有工作目录锁；此后该目录上的调用会返回 `WORKSPACE_BUSY`。当前锁格式不负责自动恢复这类保守保留的锁。
+- Windows 使用绝对路径 `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F`。该确认仅针对这次操作结果，不等同于 Job Object 或防崩溃进程容器。如果根进程在树级终止开始前已经退出，relay 无法确认后代清理，会保留锁。POSIX 清理范围仅覆盖 worker 的原始进程组。
 - Agent 返回的结果应视为待审查工作；合并前应检查实际 diff，并运行必要测试。
 
 ## 开发
@@ -121,5 +125,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+Windows 上的 Vitest 会串行运行测试文件，避免多个进程树清理同时执行造成竞争。其他平台保留 Vitest 默认的文件并行行为，单个测试文件内的并发不受影响。
 
 真实 Agent 的 smoke test 可参考 `package.json` 中的 `test:real`、`test:real:cursor` 和 `test:real:opencode` 脚本。

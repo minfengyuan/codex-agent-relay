@@ -7,6 +7,7 @@ export type RelayErrorCode =
   | "STATE_CONFLICT"
   | "WORKSPACE_BUSY"
   | "LOCK_IO"
+  | "PROCESS_CLEANUP_FAILED"
   | "INTERNAL"
   | "OPENCODE_PERMISSION_INVALID"
   | "CANCELLED"

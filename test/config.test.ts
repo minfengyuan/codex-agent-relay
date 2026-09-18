@@ -19,6 +19,7 @@ describe("loadConfig", () => {
     expect(defaults.totalTimeoutMs).toBe(3_600_000);
     expect(defaults.cancelGraceMs).toBe(5_000);
     expect(defaults.termGraceMs).toBe(2_000);
+    expect(defaults.killConfirmMs).toBe(2_000);
     expect(defaults.textLimitBytes).toBe(256 * 1024);
     expect(defaults.stderrLimitBytes).toBe(64 * 1024);
     expect(defaults.progressIntervalMs).toBe(1_000);
@@ -34,6 +35,9 @@ describe("loadConfig", () => {
       stateDir: "/tmp/relay-state",
       phaseTimeoutMs: 10,
     });
+
+    expect(loadConfig({ CODEX_AGENT_RELAY_KILL_CONFIRM_MS: "17" }).killConfirmMs).toBe(17);
+    expect(loadConfig({ CODEX_AGENT_RELAY_KILL_CONFIRM_MS: "0" }).killConfirmMs).toBe(2_000);
 
     expect(loadConfig({
       GROK_RELAY_GROK_COMMAND: "old-grok",

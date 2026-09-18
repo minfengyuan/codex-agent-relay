@@ -6,6 +6,7 @@ import { SessionStore } from "../src/store.js";
 import { baseConfig as config, tempDir as makeTempDir, useRunnerCleanup } from "./helpers.js";
 
 const dirs: string[] = [];
+vi.setConfig({ testTimeout: 15_000 });
 useRunnerCleanup(dirs);
 const tempDir = () => makeTempDir(dirs);
 
@@ -39,7 +40,7 @@ describe("CursorRunner", () => {
     expect(events).toContain("delegated:1");
     expect(events).toContain('"name":"codex-agent-relay"');
     expect(events).toContain("Work non-interactively.");
-  });
+  }, 15_000);
 
   it("requires an explicit Cursor command and rejects nested delegation", async () => {
     const state = await tempDir();

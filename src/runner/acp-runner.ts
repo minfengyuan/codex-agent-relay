@@ -5,10 +5,16 @@ import type { RelayConfig } from "../config.js";
 import type { SessionStore } from "../store.js";
 import { RelayFailure, type DelegateInput, type RelayResult } from "../types.js";
 import { abortFailure, hasLoadCapability } from "./helpers.js";
-import { appendLimited, delay, withTimeout } from "./limits.js";
+import { appendLimited, boundedString, withTimeout } from "./limits.js";
+import {
+  createProcessTreeController,
+  processTreeSpawnOptions,
+  type ProcessTreeController,
+  type TerminationReport,
+} from "./process-tree.js";
 import type { ProgressReporter, ProviderAdapter } from "./types.js";
 
-type ActiveChild = { child: ChildProcessWithoutNullStreams; sessionId: string | null; cancel: () => Promise<void> };
+type ActiveChild = { cancel: () => Promise<TerminationReport> };
 type ActiveTask = { cancel: () => Promise<void>; settled: Promise<void>; resolveSettled: () => void };
 
 const activeTasks = new Set<ActiveTask>();
@@ -36,11 +42,14 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     let permissionFailure: RelayFailure | undefined;
     let promptStarted = false;
     let child: ChildProcessWithoutNullStreams | undefined;
+    let processTree: ProcessTreeController | undefined;
+    const worker: { state: "not-attempted" | "pending" | "created" | "failed" } = { state: "not-attempted" };
     let active: ActiveChild | undefined;
     let operation: Promise<string> | undefined;
     let completedResult: R | undefined;
     let pendingError: RelayFailure | undefined;
     let releaseError: unknown;
+    let cleanupReport: TerminationReport | undefined;
     const summarizer = this.adapter.createSummarizer(Math.max(64 * 1_024, this.config.textLimitBytes));
     const partial = (): Partial<R> => ({
       sessionId,
@@ -54,7 +63,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       cancel: async () => {
         totalAbort.abort(new RelayFailure("CANCELLED", "Relay is shutting down"));
         if (active) await active.cancel().catch(() => undefined);
-        else if (child) await this.terminate(child).catch(() => undefined);
+        else if (processTree) await processTree.terminate().catch(() => undefined);
       },
       settled: new Promise<void>((resolve) => { resolveSettled = resolve; }),
       resolveSettled: () => resolveSettled(),
@@ -76,12 +85,22 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const invocation = this.adapter.command(input, record);
       const childEnv = { ...process.env, CODEX_AGENT_RELAY_DELEGATED: "1" };
-      child = spawn(invocation.command, invocation.args, {
-        cwd,
-        env: this.adapter.spawnEnv ? this.adapter.spawnEnv(childEnv) : childEnv,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+      worker.state = "pending";
+      try {
+        child = spawn(invocation.command, invocation.args, {
+          cwd,
+          env: this.adapter.spawnEnv ? this.adapter.spawnEnv(childEnv) : childEnv,
+          shell: false,
+          stdio: ["pipe", "pipe", "pipe"],
+          ...processTreeSpawnOptions(),
+        });
+      } catch (error) {
+        worker.state = "failed";
+        throw error;
+      }
+      processTree = createProcessTreeController(child, {
+        termGraceMs: this.config.termGraceMs,
+        killConfirmMs: this.config.killConfirmMs,
       });
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
@@ -92,26 +111,36 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
           : joined;
       });
       await withTimeout(new Promise<void>((resolve, reject) => {
-        child?.once("spawn", resolve);
-        child?.once("error", reject);
+        child?.once("spawn", () => { worker.state = "created"; resolve(); });
+        child?.once("error", (error) => {
+          worker.state = processTree?.reference() ? "created" : "failed";
+          reject(error);
+        });
       }), this.config.phaseTimeoutMs, "SPAWN_TIMEOUT", `Timed out starting ${this.adapter.displayName}`);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
 
       let clientContext: acp.ClientContext | undefined;
-      const cancelChild = async (): Promise<void> => {
-        if (clientContext && sessionId) {
-          await Promise.race([
-            (async () => {
-              await clientContext.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => undefined);
-              if (child?.exitCode !== null || child.signalCode !== null) return;
-              await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
-            })(),
-            delay(this.config.cancelGraceMs),
-          ]);
-        }
-        await this.terminate(child as ChildProcessWithoutNullStreams);
+      let cancellation: Promise<TerminationReport> | undefined;
+      const cancelChild = (): Promise<TerminationReport> => {
+        cancellation ??= (async () => {
+          if (clientContext && sessionId) {
+            const deadline = Date.now() + this.config.cancelGraceMs;
+            await settleWithin(
+              clientContext.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => undefined),
+              Math.max(1, deadline - Date.now()),
+            );
+            const remaining = Math.max(0, deadline - Date.now());
+            if (remaining > 0) await waitForExit(child as ChildProcessWithoutNullStreams, remaining);
+          }
+          return processTree?.terminate() ?? {
+            forced: false,
+            confirmed: false,
+            reason: "The worker process tree controller is unavailable",
+          };
+        })();
+        return cancellation;
       };
-      active = { child, sessionId, cancel: cancelChild };
+      active = { cancel: cancelChild };
 
       const stream = acp.ndJsonStream(
         Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
@@ -210,7 +239,6 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
           }), this.config.phaseTimeoutMs, "NEW_SESSION_TIMEOUT", `${this.adapter.displayName} session creation timed out`);
           sessionId = created.sessionId;
           if (!sessionId) throw new RelayFailure("INVALID_SESSION", `${this.adapter.displayName} returned an empty sessionId`);
-          if (active) active.sessionId = sessionId;
           sessionModes = created.modes;
           configOptions = created.configOptions;
         }
@@ -258,7 +286,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     } catch (error) {
       if ((totalAbort.signal.aborted || permissionRequested) && active) {
         await active.cancel().catch(() => undefined);
-        if (operation) await Promise.race([operation.catch(() => undefined), delay(this.config.termGraceMs)]);
+        if (operation) await settleWithin(operation.catch(() => undefined), this.config.killConfirmMs);
       }
       const effectiveError = totalAbort.signal.aborted && totalAbort.signal.reason instanceof RelayFailure
         ? totalAbort.signal.reason
@@ -276,16 +304,38 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     } finally {
       clearTimeout(totalTimer);
       signal?.removeEventListener("abort", onCallerAbort);
-      if (active) await this.terminate(active.child).catch(() => undefined);
-      else if (child) await this.terminate(child).catch(() => undefined);
       try {
-        await release?.();
-      } catch (error) {
-        releaseError = error;
+        if (worker.state === "created" || worker.state === "pending") {
+          try {
+            cleanupReport = processTree
+              ? await processTree.terminate()
+              : { forced: false, confirmed: false, reason: "The worker process tree controller is unavailable" };
+          } catch (error) {
+            cleanupReport = { forced: false, confirmed: false, reason: String(error) };
+          }
+        }
+        if (worker.state === "not-attempted" || worker.state === "failed" || cleanupReport?.confirmed) {
+          try {
+            await release?.();
+          } catch (error) {
+            releaseError = error;
+          }
+        }
       } finally {
         activeTasks.delete(taskEntry);
         taskEntry.resolveSettled();
       }
+    }
+    if ((worker.state === "created" || worker.state === "pending") && !cleanupReport?.confirmed) {
+      const prior = pendingError ? `; original error ${pendingError.code}: ${pendingError.message}` : "";
+      throw new RelayFailure(
+        "PROCESS_CLEANUP_FAILED",
+        boundedString(
+          `Cannot confirm worker process-tree cleanup: ${cleanupReport?.reason ?? "unknown cleanup failure"}${prior}`,
+          Math.min(this.config.stderrLimitBytes, 8 * 1_024),
+        ),
+        { ...partial(), ...(pendingError?.partial ?? {}) } as Partial<R>,
+      );
     }
     if (releaseError) {
       const failure = releaseError instanceof RelayFailure
@@ -298,26 +348,26 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     return completedResult;
   }
 
-  private async terminate(child: ChildProcessWithoutNullStreams): Promise<void> {
-    if (child.pid === undefined) return;
-    if (process.platform === "win32") {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-      await delay(this.config.termGraceMs);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      return;
-    }
-    const group = -child.pid;
-    try { process.kill(group, "SIGTERM"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-    }
-    const deadline = Date.now() + this.config.termGraceMs;
-    while (Date.now() < deadline) {
-      try { process.kill(group, 0); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-      }
-      await delay(Math.min(25, Math.max(1, deadline - Date.now())));
-    }
-    try { process.kill(group, "SIGKILL"); } catch { /* group exited */ }
+}
+
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onExit = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { child.off("exit", onExit); resolve(); }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

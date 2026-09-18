@@ -31,7 +31,7 @@ describe("workspace locks", () => {
       .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     await cleanupAllChildren();
     await expect(active).rejects.toMatchObject({ code: "CANCELLED" });
-  });
+  }, 15_000);
 
   it("isolates OpenCode metadata while sharing cwd locks across providers", async () => {
     vi.stubEnv("XAI_API_KEY", "");
@@ -69,5 +69,5 @@ describe("workspace locks", () => {
       .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
     await cleanupAllChildren();
     await expect(active).rejects.toMatchObject({ code: "CANCELLED" });
-  });
+  }, 15_000);
 });

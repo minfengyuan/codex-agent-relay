@@ -68,6 +68,14 @@ if (mode === "malformed") {
         log(`descendant:${descendant.pid}`);
         descendant.unref();
       }
+      if (mode === "descendant-write") {
+        const descendant = spawn(process.execPath, ["-e", "const fs=require('node:fs');fs.appendFileSync(process.argv[1],'x');process.send('ready');setInterval(()=>fs.appendFileSync(process.argv[1],'x'),10)", process.env.FAKE_DESCENDANT_OUTPUT], {
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+        });
+        await new Promise((resolve) => descendant.once("message", resolve));
+        log(`descendant:${descendant.pid}`);
+        descendant.unref();
+      }
       if (mode === "permission" || mode === "permission-basic" || mode === "permission-no-reject") {
         const outcome = await ctx.client.request(acp.methods.client.session.requestPermission, {
           sessionId: ctx.params.sessionId,

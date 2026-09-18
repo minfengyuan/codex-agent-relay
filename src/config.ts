@@ -13,6 +13,7 @@ export type RelayConfig = {
   totalTimeoutMs: number;
   cancelGraceMs: number;
   termGraceMs: number;
+  killConfirmMs: number;
   textLimitBytes: number;
   stderrLimitBytes: number;
   progressIntervalMs: number;
@@ -35,6 +36,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
     totalTimeoutMs: positiveInt(env.CODEX_AGENT_RELAY_TOTAL_TIMEOUT_MS, 3_600_000),
     cancelGraceMs: positiveInt(env.CODEX_AGENT_RELAY_CANCEL_GRACE_MS, 5_000),
     termGraceMs: positiveInt(env.CODEX_AGENT_RELAY_TERM_GRACE_MS, 2_000),
+    killConfirmMs: positiveInt(env.CODEX_AGENT_RELAY_KILL_CONFIRM_MS, 2_000),
     textLimitBytes: positiveInt(env.CODEX_AGENT_RELAY_TEXT_LIMIT_BYTES, 256 * 1024),
     stderrLimitBytes: positiveInt(env.CODEX_AGENT_RELAY_STDERR_LIMIT_BYTES, 64 * 1024),
     progressIntervalMs: positiveInt(env.CODEX_AGENT_RELAY_PROGRESS_INTERVAL_MS, 1_000),

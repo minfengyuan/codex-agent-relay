@@ -68,7 +68,7 @@ A public tool-contract change normally begins here and must stay synchronized wi
 11. Send one prompt and collect bounded text/provider summaries.
 12. Touch resumed session metadata after successful completion.
 13. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
-14. Terminate the child/process group and release the workspace lock in `finally`.
+14. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
 
 Provider-name branches should not be added here when the `ProviderAdapter` contract can express the difference.
 
@@ -198,9 +198,13 @@ There are three cancellation sources:
 - Total task timeout.
 - Relay shutdown.
 
-The runner first attempts the ACP session-cancel notification when possible, then terminates the child. On POSIX systems the provider is spawned in its own process group so descendants can be terminated together; Windows uses child termination with grace/escalation behavior.
+The runner first attempts the ACP session-cancel notification when possible, waits within the cancellation grace period, then terminates the process tree. Cancellation and termination are single-flight operations so concurrent shutdown paths do not repeat notifications or signals.
 
-`cleanupAllChildren()` is a process-wide safety net used by `src/cli.ts` and tests. Any lifecycle refactor must preserve the guarantee that shutdown does not leave delegated workers alive.
+On POSIX systems the provider is spawned in its own process group. Cleanup sends group-level `SIGTERM`, escalates to `SIGKILL`, and confirms both group disappearance and direct-child exit; processes that escape the original group are outside this guarantee. Windows invokes the absolute `%SystemRoot%\System32\taskkill.exe` path with `/T /F`, without a shell, and confirms both a successful helper exit and direct-child exit. This is confirmation of the `taskkill` operation, not Job Object or crash-proof containment. A Windows root that exits before tree termination is conservatively unconfirmed because the relay can no longer establish descendant cleanup.
+
+If process-tree cleanup is unconfirmed, the runner returns `PROCESS_CLEANUP_FAILED`, preserves partial task output, and leaves the existing `cwd` lock in place. The current lock format does not mark or automatically recover this state; later requests continue to receive `WORKSPACE_BUSY`.
+
+`cleanupAllChildren()` remains the process-wide safety net used by `src/cli.ts` and tests. Making cleanup unavoidable after CLI close failures and aggregating process-wide cleanup errors are separate shutdown-boundary work, not part of this lifecycle change.
 
 ## Error model
 
@@ -221,6 +225,7 @@ Guidelines:
 - 1h total delegation timeout.
 - 5s ACP cancellation grace.
 - 2s process termination grace.
+- 2s forced-termination confirmation (`CODEX_AGENT_RELAY_KILL_CONFIRM_MS`).
 - 256 KiB text limit.
 - 64 KiB stderr tail.
 - 1s progress interval.

@@ -62,6 +62,8 @@ CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 
 If needed, the Grok and OpenCode executables can also be overridden with `CODEX_AGENT_RELAY_GROK_COMMAND` and `CODEX_AGENT_RELAY_OPENCODE_COMMAND`.
 
+Process cleanup can be tuned in milliseconds with `CODEX_AGENT_RELAY_CANCEL_GRACE_MS` (ACP cancellation grace), `CODEX_AGENT_RELAY_TERM_GRACE_MS` (POSIX `SIGTERM` grace), and `CODEX_AGENT_RELAY_KILL_CONFIRM_MS` (forced-termination confirmation, default `2000`). Invalid or non-positive values use their defaults.
+
 ### 4. Optional: install delegation guidance
 
 ```bash
@@ -111,6 +113,8 @@ Use separate worktrees for independent tasks when you want parallel delegation. 
 - Authenticate each agent CLI before delegating work. Credentials should not be placed in task arguments.
 - The relay does not create worktrees or automatically accept an agent's changes.
 - Filesystem, network, and permission behavior ultimately depends on the selected agent and its local configuration.
+- A delegated worker is terminated as a process tree. If the relay cannot confirm cleanup, it returns `PROCESS_CLEANUP_FAILED` and deliberately keeps the existing working-directory lock. Subsequent calls for that directory return `WORKSPACE_BUSY`; recovery of these conservative locks is outside the current lock format.
+- On Windows the relay uses the absolute `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F` command. This confirms the result of that operation; it is not Job Object or crash-proof containment. If the root process exits before tree termination begins, descendant cleanup cannot be confirmed and the lock is retained. POSIX cleanup covers only the worker's original process group.
 - Treat delegated output as work to review: inspect the actual diff and run the relevant checks before integrating it.
 
 ## Development
@@ -121,5 +125,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+On Windows, Vitest runs test files serially to avoid contention between simultaneous process-tree teardown operations. Other platforms keep Vitest's default file parallelism; concurrency within an individual test file is unchanged.
 
 For real-agent smoke tests, see the `test:real`, `test:real:cursor`, and `test:real:opencode` scripts in `package.json`.

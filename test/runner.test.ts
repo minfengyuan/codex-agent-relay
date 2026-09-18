@@ -7,6 +7,7 @@ import { RelayFailure } from "../src/types.js";
 import { backpressureFixture, baseConfig as config, tempDir as makeTempDir, useRunnerCleanup, waitForLog } from "./helpers.js";
 
 const dirs: string[] = [];
+vi.setConfig({ testTimeout: 15_000 });
 useRunnerCleanup(dirs);
 const tempDir = () => makeTempDir(dirs);
 
@@ -141,7 +142,7 @@ describe("GrokRunner", () => {
     vi.stubEnv("FAKE_ACP_LOG", log);
     await expect(new GrokRunner(config(state, { totalTimeoutMs: 1_000 }), new SessionStore(state)).delegate({ task: "hang", cwd }))
       .rejects.toMatchObject({ code: "TIMEOUT" });
-    expect(await readFile(log, "utf8")).toContain("cancel:fake-session-1");
+    expect((await readFile(log, "utf8")).match(/cancel:fake-session-1/g)).toHaveLength(1);
     const release = await new SessionStore(state).acquire(cwd);
     await release();
   });
@@ -159,7 +160,9 @@ describe("GrokRunner", () => {
     const started = Date.now();
     await expect(new GrokRunner(settings, new SessionStore(state)).delegate({ task: "x".repeat(2 * 1024 * 1024), cwd }))
       .rejects.toMatchObject({ code: "TIMEOUT", partial: { sessionId: "backpressure-session" } });
-    expect(Date.now() - started).toBeLessThan(3_500);
+    expect(Date.now() - started).toBeLessThan(
+      settings.totalTimeoutMs + settings.cancelGraceMs + settings.termGraceMs + settings.killConfirmMs + 500,
+    );
     const release = await new SessionStore(state).acquire(cwd);
     await release();
   });
@@ -215,13 +218,55 @@ describe("GrokRunner", () => {
     await rejected;
   });
 
-  it.each(["exit", "malformed"])("turns %s child failure into an ACP error", async (mode) => {
+  it.runIf(process.platform === "win32")("retains the lock after a Windows worker exits before tree cleanup", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "exit");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "exit", cwd }))
+      .rejects.toMatchObject({ code: "PROCESS_CLEANUP_FAILED" });
+    await expect(new SessionStore(state).acquire(cwd)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+  }, 15_000);
+
+  it.runIf(process.platform !== "win32")("reports an exited POSIX worker and releases its lock", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "exit");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "exit", cwd }))
+      .rejects.toMatchObject({ code: "ACP_FAILURE" });
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
+  });
+
+  it.each(["malformed"])("reports %s child failure without claiming Windows cleanup success", async (mode) => {
     vi.stubEnv("XAI_API_KEY", "");
     vi.stubEnv("FAKE_ACP_MODE", mode);
     const state = await tempDir();
     const cwd = await tempDir();
     await expect(new GrokRunner(config(state), new SessionStore(state)).delegate({ task: mode, cwd }))
-      .rejects.toMatchObject({ code: "ACP_FAILURE" });
+      .rejects.toMatchObject({ code: process.platform === "win32" ? "PROCESS_CLEANUP_FAILED" : "ACP_FAILURE" });
+  });
+
+  it("stops a writing descendant before releasing a successful task lock", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "descendant-write");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "writer.log");
+    const output = join(state, "writer.out");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    vi.stubEnv("FAKE_DESCENDANT_OUTPUT", output);
+    await new GrokRunner(config(state), new SessionStore(state)).delegate({ task: "writer", cwd });
+    const pid = Number(/descendant:(\d+)/.exec(await readFile(log, "utf8"))?.[1]);
+    const lease = await new SessionStore(state).acquire(cwd);
+    const first = (await readFile(output, "utf8")).length;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect((await readFile(output, "utf8")).length).toBe(first);
+    await lease();
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    const release = await new SessionStore(state).acquire(cwd);
+    await release();
   });
 
   it("rejects an unexpected permission request and keeps the session id", async () => {

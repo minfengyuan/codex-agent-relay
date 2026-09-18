@@ -2,17 +2,21 @@ import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/se
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { createRelayServer } from "../src/server.js";
+import { grokFixture } from "./helpers.js";
 
 const dirs: string[] = [];
-afterEach(async () => Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
 
-async function harness() {
+async function harness(overrides: Partial<ReturnType<typeof loadConfig>> = {}) {
   const stateDir = await mkdtemp(join(tmpdir(), "relay-server-"));
   dirs.push(stateDir);
-  const server = createRelayServer({ ...loadConfig({}), stateDir });
+  const server = createRelayServer({ ...loadConfig({}), stateDir, ...overrides });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const responses = new Map<number, (message: JSONRPCMessage) => void>();
   clientTransport.onmessage = (message) => {
@@ -107,6 +111,32 @@ describe("MCP server", () => {
       truncated: false,
       provider: "opencode",
       error: { code: "INVALID_INPUT" },
+    });
+    await clientTransport.close();
+    await server.close();
+  });
+
+  it.runIf(process.platform === "win32")("returns a structured cleanup failure and retains the original partial result", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "exit");
+    const cwd = await mkdtemp(join(tmpdir(), "relay-server-cwd-"));
+    dirs.push(cwd);
+    const { server, clientTransport, request } = await harness({
+      command: process.execPath,
+      commandArgs: [grokFixture],
+    });
+    const response = await request(6, "tools/call", {
+      name: "grok_delegate",
+      arguments: { task: "exit", cwd },
+    }) as { result?: { isError?: boolean; structuredContent?: unknown } };
+    expect(response.result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        sessionId: null,
+        stopReason: null,
+        text: "",
+        truncated: false,
+        error: { code: "PROCESS_CLEANUP_FAILED" },
+      },
     });
     await clientTransport.close();
     await server.close();
