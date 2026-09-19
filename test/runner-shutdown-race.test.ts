@@ -5,7 +5,7 @@ import { createRelayServer } from "../src/server.js";
 import { SessionStore } from "../src/store.js";
 import type * as Store from "../src/store.js";
 import { RelayFailure } from "../src/types.js";
-import { baseConfig, cleanupDirs, tempDir } from "./helpers.js";
+import { baseConfig, cleanupDirs, clearDelegatedEnv, tempDir } from "./helpers.js";
 
 const state = vi.hoisted(() => ({ beforeResolve: async () => {} }));
 vi.mock("../src/store.js", async (load) => {
@@ -20,6 +20,7 @@ function barrier() {
 }
 
 it("snapshots blocked acquisition, rejects delayed cwd resolution, and caches a failed shutdown", async () => {
+  clearDelegatedEnv();
   const dirs: string[] = [];
   const acquired = barrier(), acquireGate = barrier(), resolving = barrier(), resolveGate = barrier();
   const stages: string[] = [];

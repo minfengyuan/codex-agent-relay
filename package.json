@@ -20,7 +20,8 @@
     "test": "vitest run",
     "test:real": "vitest run test/real-smoke.test.ts",
     "test:real:cursor": "vitest run test/cursor-real-smoke.test.ts",
-    "test:real:opencode": "vitest run test/opencode-real-smoke.test.ts"
+    "test:real:opencode": "vitest run test/opencode-real-smoke.test.ts",
+    "test:real:dsh": "vitest run test/dsh-real-smoke.test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

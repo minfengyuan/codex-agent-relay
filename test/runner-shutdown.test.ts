@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginRunnerShutdown, cleanupAllChildren, GrokRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
-import { baseConfig, cleanupDirs, tempDir, waitForLog } from "./helpers.js";
+import { baseConfig, cleanupDirs, clearDelegatedEnv, tempDir, waitForLog } from "./helpers.js";
 import type * as ProcessTree from "../src/runner/process-tree.js";
 
 const captured = vi.hoisted(() => ({ children: [] as ChildProcessWithoutNullStreams[] }));
@@ -16,6 +16,10 @@ vi.mock("../src/runner/process-tree.js", async (load) => {
 });
 
 const dirs: string[] = [];
+
+beforeEach(() => {
+  clearDelegatedEnv();
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();

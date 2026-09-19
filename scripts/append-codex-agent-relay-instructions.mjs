@@ -17,6 +17,7 @@ Codex owns planning, delegation, review, and integration. External agents execut
 - Use \`grok_delegate\` for self-contained implementation work or an explicit Grok delegation request.
 - Use \`cursor_delegate\` for Cursor implementation tasks or focused analysis in \`ask\` mode; an optional \`model\` selects the startup model.
 - Use \`opencode_delegate\` for OpenCode implementation work. Optional \`model\`, \`effort\`, and \`agent\` change the live session configuration; omitted fields keep OpenCode's restored or default state.
+- Use \`dsh_delegate\` for DSH implementation work. Optional \`model\` and \`reasoningEffort\` change the live session configuration; omitted fields keep DSH's restored or default state. Existing sessions resume only when DSH advertises resume; the relay does not load or recreate them.
 
 When delegating:
 
@@ -27,6 +28,7 @@ When delegating:
 - Cursor uses its native permission rules and sandbox. On PERMISSION_REQUIRED, review the returned request and coordinate any policy change before resuming; do not retry to bypass the rejection.
 - OpenCode auto-selects the request's \`allow_once\` permission option. On PERMISSION_REQUIRED, \`allow_once\` was missing; review the failure and do not treat a retry as extra approval.
 - OpenCode's child \`question: deny\` overlay can be overridden by agent-specific rules. The worker is noninteractive and will time out if it waits for a user; this is not hard isolation.
+- DSH permission requests are refused (\`reject_once\` when offered). On PERMISSION_REQUIRED, review the request and coordinate any policy change before resuming; do not retry to bypass the rejection. The relay refuses automatic approvals; it does not provide hard filesystem or network isolation. Saved DSH sessions and deployment configuration still apply.
 - Keep this relay out of downstream agents' MCP configuration to avoid recursive delegation.
 <!-- CODEX-AGENT-RELAY_END -->`;
 

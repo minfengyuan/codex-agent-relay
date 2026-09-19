@@ -59,7 +59,7 @@ async function start(mode = "normal", actualEntry = false) {
   const child = spawn(process.execPath, actualEntry ? [join(root, "dist/cli.js")]
     : [join(root, "test/fixtures/cli-runtime-holder.mjs"), state, log, mode], {
     cwd, shell: false, windowsHide: true,
-    env: { ...process.env, CODEX_AGENT_RELAY_STATE_DIR: state },
+    env: { ...process.env, CODEX_AGENT_RELAY_STATE_DIR: state, CODEX_AGENT_RELAY_DELEGATED: "" },
     stdio: ["pipe", "pipe", "pipe", "ipc"],
   });
   children.push(child);

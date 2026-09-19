@@ -79,7 +79,16 @@ When changing an existing adapter, walk through the contract in this order:
 - Existing sessions prefer ACP resume when available, then load; `resume: false` explicitly requires load support.
 - `model`, `effort`, and `agent` map to advertised session config options and must be validated against available values before setting.
 - An ACP permission may be accepted only through an offered `allow_once`; otherwise fail deterministically.
-- Usage/tool-call summaries must remain bounded through `OpenCodeSummaries`.
+- Usage/tool-call summaries must remain bounded through `OpenCodeSummaries` (`StandardSummaries` with provider `"opencode"`).
+
+### DSH
+
+- Command defaults to `dsh` with args `--profile acp`. `CODEX_AGENT_RELAY_DSH_COMMAND` may override the executable; `dshCommandArgs` is a complete test override with no args env.
+- Do not send an authenticate request. Advertised client capabilities are empty.
+- Existing sessions use ACP resume only when `hasResumeCapability` is present; otherwise fail with `RESUME_UNSUPPORTED`. Never load or create a replacement session.
+- `model` and `reasoningEffort` map to advertised `model` and `reasoning_effort` config options. Refresh `configOptions` after each set. Missing options are `CONFIG_UNSUPPORTED`; invalid values are `INVALID_CONFIG`.
+- Permission requests are refused: select `reject_once` when offered, otherwise cancel, and fail with `PERMISSION_REQUIRED`. Never select `allow_once` or `allow_always`. The relay refuses automatic approvals; saved DSH sessions and deployment config still apply, and this is not hard filesystem/network isolation.
+- Usage/tool-call summaries use `StandardSummaries` with an explicit `"dsh"` provider.
 
 ## Adding a provider
 

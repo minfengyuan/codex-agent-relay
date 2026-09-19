@@ -35,6 +35,7 @@ Available package scripts:
 pnpm test:real
 pnpm test:real:cursor
 pnpm test:real:opencode
+pnpm test:real:dsh
 ```
 
 Run these only when the corresponding CLI is installed/authenticated and the change needs verification against a real implementation. A missing real-provider environment is not a reason to weaken or skip hermetic coverage.
@@ -49,6 +50,7 @@ Use the narrowest test file that owns the behavior:
 - `runner.test.ts` — generic Grok/common ACP runner behavior.
 - `cursor-runner.test.ts` — Cursor adapter behavior.
 - `opencode-runner.test.ts` — OpenCode adapter behavior.
+- `dsh-runner.test.ts` — DSH adapter behavior.
 - `process-lifecycle.test.ts` — cancellation, timeouts, child/process cleanup, and shutdown-sensitive cases.
 - `server.test.ts` — MCP tool schemas/wiring and structured results/errors.
 - `append-codex-agent-relay-instructions.test.ts` — setup-script transformations.

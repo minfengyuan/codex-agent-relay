@@ -2,6 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import { RelayFailure } from "../types.js";
 import type {
   CursorRelayResult,
+  DshRelayResult,
   GrokRelayResult,
   ImageSummary,
   InteractionSummary,
@@ -103,12 +104,18 @@ export class CursorSummaries implements ProviderSummarizer<CursorRelayResult> {
   }
 }
 
-export class OpenCodeSummaries implements ProviderSummarizer<OpenCodeRelayResult> {
+type StandardProvider = "opencode" | "dsh";
+type StandardRelayResult<P extends StandardProvider> = Extract<OpenCodeRelayResult | DshRelayResult, { provider: P }>;
+
+export class StandardSummaries<P extends StandardProvider> implements ProviderSummarizer<StandardRelayResult<P>> {
   readonly toolCalls: ToolCallSummary[] = [];
   truncated = false;
   usage?: UsageSummary;
 
-  constructor(private readonly limitBytes: number) {}
+  constructor(
+    private readonly limitBytes: number,
+    private readonly provider: P,
+  ) {}
 
   add(value: ToolCallSummary): void {
     this.toolCalls.push(value);
@@ -130,13 +137,22 @@ export class OpenCodeSummaries implements ProviderSummarizer<OpenCodeRelayResult
     this.usage = usageFromUpdate(update);
   }
 
-  result(): Pick<OpenCodeRelayResult, "provider" | "toolCalls" | "usage" | "summariesTruncated"> {
-    return {
-      provider: "opencode",
-      ...(this.toolCalls.length ? { toolCalls: this.toolCalls } : {}),
-      ...(this.usage ? { usage: this.usage } : {}),
-      ...(this.truncated ? { summariesTruncated: true } : {}),
-    };
+  result(): Partial<StandardRelayResult<P>> {
+    const extras: {
+      toolCalls?: ToolCallSummary[];
+      usage?: UsageSummary;
+      summariesTruncated?: true;
+    } = {};
+    if (this.toolCalls.length) extras.toolCalls = this.toolCalls;
+    if (this.usage) extras.usage = this.usage;
+    if (this.truncated) extras.summariesTruncated = true;
+    return { provider: this.provider, ...extras } as Partial<StandardRelayResult<P>>;
+  }
+}
+
+export class OpenCodeSummaries extends StandardSummaries<"opencode"> {
+  constructor(limitBytes: number) {
+    super(limitBytes, "opencode");
   }
 }
 
