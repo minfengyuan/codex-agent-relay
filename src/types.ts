@@ -27,6 +27,7 @@ export type RelayErrorCode =
   | "CONFIG_TIMEOUT"
   | "PROTOCOL_MISMATCH"
   | "LOAD_UNSUPPORTED"
+  | "RESUME_UNSUPPORTED"
   | "INVALID_SESSION"
   | "MODE_UNAVAILABLE"
   | "AUTH_UNAVAILABLE"
@@ -73,12 +74,20 @@ export type OpenCodeRelayResult = RelayResultBase & {
   summariesTruncated?: boolean;
 };
 
-export type RelayResult = GrokRelayResult | CursorRelayResult | OpenCodeRelayResult;
+export type DshRelayResult = RelayResultBase & {
+  provider: "dsh";
+  toolCalls?: ToolCallSummary[];
+  usage?: UsageSummary;
+  summariesTruncated?: boolean;
+};
+
+export type RelayResult = GrokRelayResult | CursorRelayResult | OpenCodeRelayResult | DshRelayResult;
 
 export type RelayResultPartial =
   | Partial<GrokRelayResult>
   | Partial<CursorRelayResult>
-  | Partial<OpenCodeRelayResult>;
+  | Partial<OpenCodeRelayResult>
+  | Partial<DshRelayResult>;
 
 type GrokForbiddenExtras =
   | "provider"
@@ -110,6 +119,11 @@ export type OpenCodeDelegateInput = DelegateInput & {
   model?: string;
   effort?: string;
   agent?: string;
+};
+
+export type DshDelegateInput = DelegateInput & {
+  model?: string;
+  reasoningEffort?: string;
 };
 
 export type ToolCallSummary = {

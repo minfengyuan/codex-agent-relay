@@ -4,7 +4,7 @@ import type { SessionRecord } from "../store.js";
 
 export type ProgressReporter = (message: string) => Promise<void> | void;
 
-export type Provider = "grok" | "cursor" | "opencode";
+export type Provider = "grok" | "cursor" | "opencode" | "dsh";
 export type ExistingSessionAction = "resume" | "load";
 
 export type ToolCallUpdate = {

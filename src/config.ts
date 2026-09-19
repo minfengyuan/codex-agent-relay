@@ -8,6 +8,8 @@ export type RelayConfig = {
   cursorCommandArgs?: string[];
   opencodeCommand?: string;
   opencodeCommandArgs?: string[];
+  dshCommand?: string;
+  dshCommandArgs?: string[];
   stateDir: string;
   phaseTimeoutMs: number;
   totalTimeoutMs: number;
@@ -31,6 +33,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
     commandArgs: ["--no-auto-update", "--sandbox", "workspace", "agent", "--always-approve", "--no-leader", "stdio"],
     ...(env.CODEX_AGENT_RELAY_CURSOR_COMMAND?.trim() ? { cursorCommand: env.CODEX_AGENT_RELAY_CURSOR_COMMAND.trim() } : {}),
     opencodeCommand: env.CODEX_AGENT_RELAY_OPENCODE_COMMAND?.trim() || "opencode",
+    dshCommand: env.CODEX_AGENT_RELAY_DSH_COMMAND?.trim() || "dsh",
     stateDir: env.CODEX_AGENT_RELAY_STATE_DIR ?? join(homedir(), ".local", "codex-agent-relay"),
     phaseTimeoutMs: positiveInt(env.CODEX_AGENT_RELAY_PHASE_TIMEOUT_MS, 30_000),
     totalTimeoutMs: positiveInt(env.CODEX_AGENT_RELAY_TOTAL_TIMEOUT_MS, 3_600_000),

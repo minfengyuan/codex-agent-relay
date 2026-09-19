@@ -21,7 +21,7 @@ AcpRunner ───────── SessionStore
   │ stdin/stdout       └─ per-cwd locks
   ▼
 Provider CLI
-(Grok / Cursor / OpenCode)
+(Grok / Cursor / OpenCode / DSH)
 ```
 
 The relay is an orchestration boundary, not a second autonomous planner. Codex chooses what to delegate and reviews/integrates the result; the relay executes one non-interactive provider turn and returns a resumable session ID plus bounded output.
@@ -45,7 +45,7 @@ Do not move provider behavior here.
 Responsibilities:
 
 - Define Zod schemas for MCP tool inputs and structured outputs.
-- Register `grok_delegate`, `cursor_delegate`, and `opencode_delegate`.
+- Register `grok_delegate`, `cursor_delegate`, `opencode_delegate`, and `dsh_delegate`.
 - Resolve and validate `cwd` before execution.
 - Convert runner results and `RelayFailure`s into MCP tool results.
 - Forward MCP cancellation and progress notifications into the runner.
@@ -77,7 +77,7 @@ Provider-name branches should not be added here when the `ProviderAdapter` contr
 
 - `types.ts` defines `ProviderAdapter`, summarizer, permission runtime, and session configuration extension points.
 - `limits.ts` bounds output and supplies timeout helpers.
-- `summaries.ts` converts high-volume provider updates into bounded structured summaries.
+- `summaries.ts` converts high-volume provider updates into bounded structured summaries. Standard usage/tool-call summaries require an explicit provider; `OpenCodeSummaries(limit)` remains a thin `"opencode"` wrapper.
 - `helpers.ts` centralizes ACP capability/auth/cancellation helpers.
 
 These modules may know ACP concepts but should remain provider-neutral unless a type is explicitly a provider summary implementation.
@@ -159,19 +159,19 @@ Important consequences:
 
 - A returned `sessionId` is provider-specific and must be sent back to the same MCP tool/provider.
 - A session is tied to the resolved working directory to prevent accidental continuation in another checkout/worktree.
-- Provider options that must remain stable across a session belong in persisted metadata when necessary. Cursor currently persists model/mode semantics; Grok and OpenCode currently do not persist extra adapter metadata.
+- Provider options that must remain stable across a session belong in persisted metadata when necessary. Cursor currently persists model/mode semantics; Grok, OpenCode, and DSH currently do not persist extra adapter metadata.
 - Provider capability negotiation decides whether an existing session can be resumed or loaded.
 
 ## Provider behavior matrix
 
-| Concern | Grok | Cursor | OpenCode |
-| --- | --- | --- | --- |
-| CLI default | `grok` | explicit `CODEX_AGENT_RELAY_CURSOR_COMMAND` required | `opencode` |
-| Authentication | `xai.api_key` when available, otherwise `cached_token` | `cursor_login` | `opencode-login` when advertised; no auth request when none advertised |
-| Existing session | common load behavior | common load behavior with persisted mode/model checks | prefers ACP resume, falls back to load; `resume: false` forces load |
-| Interactive questions | not supported | question requests are skipped; plan approval rejected | question permission is disabled in child env |
-| Permission request | unexpected -> fail/cancel | reject once when possible and fail with structured summary | allow once when offered; otherwise fail |
-| Provider summaries | plain text result | tool calls, todos, subagents, interactions, images | usage and tool-call summaries |
+| Concern | Grok | Cursor | OpenCode | DSH |
+| --- | --- | --- | --- | --- |
+| CLI default | `grok` | explicit `CODEX_AGENT_RELAY_CURSOR_COMMAND` required | `opencode` | `dsh --profile acp` |
+| Authentication | `xai.api_key` when available, otherwise `cached_token` | `cursor_login` | `opencode-login` when advertised; no auth request when none advertised | no authenticate request |
+| Existing session | common load behavior | common load behavior with persisted mode/model checks | prefers ACP resume, falls back to load; `resume: false` forces load | resume only when advertised; never load or fall back to new |
+| Interactive questions | not supported | question requests are skipped; plan approval rejected | question permission is disabled in child env | noninteractive prompt prefix only |
+| Permission request | unexpected -> fail/cancel | reject once when possible and fail with structured summary | allow once when offered; otherwise fail | reject once when offered; never allow; fail with PERMISSION_REQUIRED. Refuses automatic approvals, not hard isolation |
+| Provider summaries | plain text result | tool calls, todos, subagents, interactions, images | usage and tool-call summaries | usage and tool-call summaries |
 
 This table describes current implementation, not a requirement that every future provider behave identically.
 

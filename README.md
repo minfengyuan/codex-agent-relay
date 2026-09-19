@@ -2,13 +2,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Delegate Codex tasks to **Grok**, **Cursor**, and **OpenCode** through one local MCP server.
+Delegate Codex tasks to **Grok**, **Cursor**, **OpenCode**, and **DSH** through one local MCP server.
 
 `codex-agent-relay` bridges Codex MCP calls to ACP-capable coding agents. Codex stays in charge of orchestration and review; the relay handles delegation and returns the agent result together with a resumable session ID.
 
 ## Why use it?
 
-- **One MCP server, multiple coding agents** — switch between Grok, Cursor, and OpenCode without changing the Codex workflow.
+- **One MCP server, multiple coding agents** — switch between Grok, Cursor, OpenCode, and DSH without changing the Codex workflow.
 - **Resumable sessions** — continue a delegated task instead of starting from scratch every turn.
 - **Worktree-friendly delegation** — run independent tasks in different working directories in parallel.
 - **Local-first** — agents run through their local CLIs and use their existing authentication and configuration.
@@ -21,6 +21,7 @@ Delegate Codex tasks to **Grok**, **Cursor**, and **OpenCode** through one local
 | Grok | `grok_delegate` | General implementation, debugging, and review |
 | Cursor | `cursor_delegate` | Agent or ask-mode coding tasks |
 | OpenCode | `opencode_delegate` | Coding tasks with optional model/effort/agent selection |
+| DSH | `dsh_delegate` | Coding tasks with optional model/reasoning effort; resume only |
 
 ## Quick start
 
@@ -53,14 +54,14 @@ startup_timeout_sec = 10
 tool_timeout_sec = 3660
 ```
 
-Grok defaults to the `grok` command and OpenCode defaults to `opencode`. Cursor must be configured explicitly:
+Grok defaults to the `grok` command, OpenCode defaults to `opencode`, and DSH defaults to `dsh --profile acp`. Cursor must be configured explicitly:
 
 ```toml
 [mcp_servers.codex_agent_relay.env]
 CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
-If needed, the Grok and OpenCode executables can also be overridden with `CODEX_AGENT_RELAY_GROK_COMMAND` and `CODEX_AGENT_RELAY_OPENCODE_COMMAND`.
+If needed, the Grok, OpenCode, and DSH executables can also be overridden with `CODEX_AGENT_RELAY_GROK_COMMAND`, `CODEX_AGENT_RELAY_OPENCODE_COMMAND`, and `CODEX_AGENT_RELAY_DSH_COMMAND`. DSH arguments have no environment override; the relay always launches `dsh --profile acp`.
 
 Process cleanup can be tuned in milliseconds with `CODEX_AGENT_RELAY_CANCEL_GRACE_MS` (ACP cancellation grace), `CODEX_AGENT_RELAY_TERM_GRACE_MS` (POSIX `SIGTERM` grace), and `CODEX_AGENT_RELAY_KILL_CONFIRM_MS` (forced-termination confirmation, default `2000`). Invalid or non-positive values use their defaults.
 
@@ -82,15 +83,38 @@ Use Grok to review the current changes in /path/to/worktree and run the relevant
 Ask Cursor to inspect the authentication flow without editing files.
 
 Delegate this implementation task to OpenCode in /path/to/worktree.
+
+Delegate this implementation task to DSH in /path/to/worktree.
 ```
 
-The relay exposes three tools:
+The relay exposes four tools:
 
 - `grok_delegate`
 - `cursor_delegate`
 - `opencode_delegate`
+- `dsh_delegate`
 
 Each call needs a task and an absolute working directory. Returned `sessionId` values can be passed back to the same tool to continue the conversation with that agent.
+
+### DSH (`dsh_delegate`)
+
+DSH is DeepSeek Harness. Install and configure the `dsh` CLI before delegating. The relay preflights `dsh --version` and `dsh --profile acp --help` in opt-in real tests; production calls spawn `dsh --profile acp`.
+
+Tool inputs:
+
+| Input | Required | Notes |
+| --- | --- | --- |
+| `task` | yes | Non-empty after trim |
+| `cwd` | yes | Existing absolute working directory |
+| `sessionId` | no | Previously returned DSH session ID (resume only; there is no `resume` boolean) |
+| `model` | no | Opaque advertised `model` session option |
+| `reasoningEffort` | no | Opaque advertised `reasoning_effort` session option |
+
+When both `model` and `reasoningEffort` are set, the relay applies `model` first, then `reasoning_effort`, using the option values advertised by the current session. Omitting either field leaves the CLI's existing configuration unchanged. Invalid advertised values fail closed (`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`).
+
+Successful results include `provider: "dsh"` plus bounded `text`, optional `toolCalls` / `usage`, and `summariesTruncated` when summaries were capped. Permission requests are refused (`reject_once` when offered) and abort with `PERMISSION_REQUIRED`.
+
+Real DSH smoke tests are opt-in (`pnpm test:real:dsh` or `RUN_DSH_REAL_TESTS=1`). Optional `DSH_TEST_MODEL` and `DSH_TEST_REASONING_EFFORT` exercise config-on-resume coverage when set.
 
 ## Recommended workflow
 
@@ -99,7 +123,7 @@ Codex chooses a task and worktree
         ↓
 codex-agent-relay delegates it
         ↓
-Grok / Cursor / OpenCode works locally
+Grok / Cursor / OpenCode / DSH works locally
         ↓
 Codex reviews the result, diff, and tests
         ↓
@@ -112,7 +136,8 @@ Use separate worktrees for independent tasks when you want parallel delegation. 
 
 - Authenticate each agent CLI before delegating work. Credentials should not be placed in task arguments.
 - The relay does not create worktrees or automatically accept an agent's changes.
-- Filesystem, network, and permission behavior ultimately depends on the selected agent and its local configuration.
+- Filesystem, network, and permission behavior ultimately depends on the selected agent and its local configuration. For DSH, the relay refuses automatic ACP approvals (`reject_once` when offered) and returns `PERMISSION_REQUIRED`; that is not hard filesystem or network isolation. Saved DSH sessions and deployment configuration still apply.
+- DSH existing sessions are resumed only when the CLI advertises resume. The relay never loads a session or falls back to creating a new one; missing resume capability returns `RESUME_UNSUPPORTED`.
 - A delegated worker is terminated as a process tree. If cleanup cannot be confirmed, the relay returns `PROCESS_CLEANUP_FAILED`, marks the workspace lease orphaned when possible, and keeps it locked. Later calls return `WORKSPACE_BUSY` while the owner is alive; after its death, unresolved worker cleanup returns `WORKSPACE_ORPHANED`.
 - `SIGINT`, `SIGTERM`, `SIGHUP`, and stdin EOF start one shared shutdown operation. The relay immediately stops accepting delegation, closes the MCP transport with a 5-second close timeout, and waits without a global deadline for every already-registered task to finish process-tree cleanup and workspace-lease finalization. Repeated shutdown events do not bypass cleanup or repeat cancellation.
 - A clean signal/EOF shutdown exits with status `0`. Transport-close, process-cleanup, or lease-finalization failures are reported on stderr and exit with status `1`; an unconfirmed worker keeps its lease locked. Because runner cleanup has no forced deadline, a permanently blocked filesystem operation can also keep shutdown waiting.
@@ -134,4 +159,4 @@ pnpm build
 
 On Windows, Vitest runs test files serially to avoid contention between simultaneous process-tree teardown operations. Other platforms keep Vitest's default file parallelism; concurrency within an individual test file is unchanged.
 
-For real-agent smoke tests, see the `test:real`, `test:real:cursor`, and `test:real:opencode` scripts in `package.json`.
+For real-agent smoke tests, see the `test:real`, `test:real:cursor`, `test:real:opencode`, and `test:real:dsh` scripts in `package.json`. Default `pnpm test` skips real DSH tests; `pnpm test:real:dsh` (or `RUN_DSH_REAL_TESTS=1`) fails if the local `dsh` CLI is unavailable.

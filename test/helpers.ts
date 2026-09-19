@@ -2,7 +2,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import type { RelayConfig } from "../src/config.js";
 import { cleanupAllChildren } from "../src/runner.js";
 
@@ -10,6 +10,7 @@ const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 export const grokFixture = join(fixtures, "fake-agent.mjs");
 export const cursorFixture = grokFixture;
 export const opencodeFixture = join(fixtures, "fake-opencode-agent.mjs");
+export const dshFixture = join(fixtures, "fake-dsh-agent.mjs");
 export const backpressureFixture = join(fixtures, "backpressure-agent.mjs");
 
 export async function tempDir(dirs: string[], prefix = "relay-"): Promise<string> {
@@ -35,6 +36,8 @@ export function baseConfig(stateDir: string, overrides: Partial<RelayConfig> = {
     cursorCommandArgs: [cursorFixture],
     opencodeCommand: process.execPath,
     opencodeCommandArgs: [opencodeFixture],
+    dshCommand: process.execPath,
+    dshCommandArgs: [dshFixture],
     stateDir,
     phaseTimeoutMs: 2_000,
     totalTimeoutMs: 15_000,
@@ -59,7 +62,16 @@ export async function waitForLog(path: string, needle: string, timeoutMs = 6_000
   throw new Error(`Timed out waiting for ${JSON.stringify(needle)} in ${path}`);
 }
 
+export function clearDelegatedEnv(): void {
+  if (process.env.CODEX_AGENT_RELAY_DELEGATED === "1") {
+    vi.stubEnv("CODEX_AGENT_RELAY_DELEGATED", "");
+  }
+}
+
 export function useRunnerCleanup(dirs: string[]): void {
+  beforeEach(() => {
+    clearDelegatedEnv();
+  });
   afterEach(async () => {
     vi.unstubAllEnvs();
     try {

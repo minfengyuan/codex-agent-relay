@@ -2,10 +2,11 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { RelayConfig } from "./config.js";
 import { SessionStore, resolveCwd } from "./store.js";
-import { CursorRunner, GrokRunner, OpenCodeRunner, type ProgressReporter } from "./runner.js";
+import { CursorRunner, DshRunner, GrokRunner, OpenCodeRunner, type ProgressReporter } from "./runner.js";
 import {
   RelayFailure,
   type CursorRelayResult,
+  type DshRelayResult,
   type GrokRelayResult,
   type OpenCodeRelayResult,
   type RelayResult,
@@ -81,21 +82,40 @@ const cursorOutputSchema = outputSchema.extend({
   summariesTruncated: z.boolean().optional(),
 });
 
+const usageSchema = z.object({
+  used: z.number(),
+  size: z.number(),
+  cost: z.object({
+    amount: z.number(),
+    currency: z.string(),
+  }).optional(),
+});
+
+const toolCallSchema = z.array(z.object({
+  toolCallId: z.string(),
+  title: z.string().optional(),
+  status: z.string().optional(),
+}));
+
 const openCodeOutputSchema = outputSchema.extend({
   provider: z.literal("opencode"),
-  usage: z.object({
-    used: z.number(),
-    size: z.number(),
-    cost: z.object({
-      amount: z.number(),
-      currency: z.string(),
-    }).optional(),
-  }).optional(),
-  toolCalls: z.array(z.object({
-    toolCallId: z.string(),
-    title: z.string().optional(),
-    status: z.string().optional(),
-  })).optional(),
+  usage: usageSchema.optional(),
+  toolCalls: toolCallSchema.optional(),
+  summariesTruncated: z.boolean().optional(),
+});
+
+const dshInputSchema = z.object({
+  task: z.string().trim().min(1).describe("Task for DSH"),
+  cwd: z.string().trim().min(1).describe("Existing absolute working directory"),
+  sessionId: z.string().trim().min(1).optional().describe("Previously returned DSH session ID"),
+  model: z.string().trim().min(1).optional().describe("DSH model session option"),
+  reasoningEffort: z.string().trim().min(1).optional().describe("DSH reasoning_effort session option"),
+});
+
+const dshOutputSchema = outputSchema.extend({
+  provider: z.literal("dsh"),
+  usage: usageSchema.optional(),
+  toolCalls: toolCallSchema.optional(),
   summariesTruncated: z.boolean().optional(),
 });
 
@@ -113,6 +133,10 @@ function isCursorPartial(value: RelayResultPartial | undefined): value is Partia
 
 function isOpenCodePartial(value: RelayResultPartial | undefined): value is Partial<OpenCodeRelayResult> {
   return value !== undefined && "provider" in value && value.provider === "opencode";
+}
+
+function isDshPartial(value: RelayResultPartial | undefined): value is Partial<DshRelayResult> {
+  return value !== undefined && "provider" in value && value.provider === "dsh";
 }
 
 function errorFields(failure: RelayFailure, sessionId: string | undefined) {
@@ -188,6 +212,7 @@ export function createRelayServer(config: RelayConfig): McpServer {
   const runner = new GrokRunner(config, new SessionStore(config.stateDir));
   const cursorRunner = new CursorRunner(config, new SessionStore(config.stateDir, "cursor"));
   const openCodeRunner = new OpenCodeRunner(config, new SessionStore(config.stateDir, "opencode"));
+  const dshRunner = new DshRunner(config, new SessionStore(config.stateDir, "dsh"));
 
   registerDelegateTool(server, {
     name: "grok_delegate",
@@ -251,6 +276,31 @@ export function createRelayServer(config: RelayConfig): McpServer {
       return {
         ...errorFields(failure, input.sessionId),
         provider: "opencode",
+        ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
+        ...(extra?.usage ? { usage: extra.usage } : {}),
+        ...(extra?.summariesTruncated ? { summariesTruncated: true } : {}),
+      };
+    },
+  });
+
+  registerDelegateTool(server, {
+    name: "dsh_delegate",
+    title: "Delegate a task to DSH",
+    description: "Runs one DSH ACP prompt in the requested working directory and optionally resumes a saved DSH session.",
+    inputSchema: dshInputSchema,
+    outputSchema: dshOutputSchema,
+    run: (input: z.infer<typeof dshInputSchema>, cwd, signal, progress) => dshRunner.delegate({
+      task: input.task,
+      cwd,
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+    }, signal, progress),
+    toErrorResult: (failure, input): DshRelayResult => {
+      const extra = isDshPartial(failure.partial) ? failure.partial : undefined;
+      return {
+        ...errorFields(failure, input.sessionId),
+        provider: "dsh",
         ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
         ...(extra?.usage ? { usage: extra.usage } : {}),
         ...(extra?.summariesTruncated ? { summariesTruncated: true } : {}),

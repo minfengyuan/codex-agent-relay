@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RelayFailure } from "../src/types.js";
-import { cleanupAllChildren, CursorRunner, GrokRunner, OpenCodeRunner } from "../src/runner.js";
+import { cleanupAllChildren, CursorRunner, DshRunner, GrokRunner, OpenCodeRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
-import { baseConfig, cleanupDirs, tempDir } from "./helpers.js";
+import { baseConfig, cleanupDirs, clearDelegatedEnv, tempDir } from "./helpers.js";
 
 const dirs: string[] = [];
 const releaseGates: Array<() => void> = [];
 
+beforeEach(() => {
+  clearDelegatedEnv();
+});
 afterEach(async () => {
   for (const release of releaseGates.splice(0)) release();
   vi.unstubAllEnvs();
@@ -68,7 +71,7 @@ describe("process-wide cleanup aggregation", () => {
     const stores = Array.from({ length: count }, (_, index) => new FailingReleaseStore(stateDir, `aggregate-${index}`));
     const cwds = await Promise.all(Array.from({ length: count }, (_, index) => tempDir(dirs, `relay-cleanup-${index}-`)));
     const tasks = cwds.map((cwd, index) => {
-      const Runner = [GrokRunner, CursorRunner, OpenCodeRunner][index % 3]!;
+      const Runner = [GrokRunner, CursorRunner, OpenCodeRunner, DshRunner][index % 4]!;
       const task = new Runner(baseConfig(stateDir), stores[index]!).delegate({ task: `blocked-${index}`, cwd });
       void task.catch(() => undefined);
       return task;

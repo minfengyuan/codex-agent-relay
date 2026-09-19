@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server";
 import type * as ProcessTree from "../src/runner/process-tree.js";
 
@@ -40,6 +40,12 @@ vi.mock("../src/runner/process-tree.js", async (importOriginal) => {
 
 const dirs: string[] = [];
 vi.setConfig({ testTimeout: 15_000 });
+
+beforeEach(() => {
+  if (process.env.CODEX_AGENT_RELAY_DELEGATED === "1") {
+    vi.stubEnv("CODEX_AGENT_RELAY_DELEGATED", "");
+  }
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();
