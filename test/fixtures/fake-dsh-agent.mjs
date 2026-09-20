@@ -14,6 +14,9 @@ if (mode === "malformed") {
 } else if (mode === "exit") {
   process.exit(19);
 } else {
+  // Model the long-lived DSH ACP profile: closing a session or the transport
+  // does not make the provider process disappear before relay tree cleanup.
+  setInterval(() => {}, 1_000);
   let cancelled = false;
   let configOptions = defaultConfigOptions(mode === "grouped");
   acp.agent({ name: "fake-dsh" })
@@ -27,7 +30,10 @@ if (mode === "malformed") {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: false,
-          ...(resume ? { sessionCapabilities: { resume: {} } } : { sessionCapabilities: {} }),
+          sessionCapabilities: {
+            ...(resume ? { resume: {} } : {}),
+            ...(mode === "no-close" ? {} : { close: {} }),
+          },
         },
         authMethods: mode === "unknown-auth" ? [
           { id: "other-login", name: "Other login" },
@@ -194,6 +200,16 @@ if (mode === "malformed") {
       });
       if (mode === "partial-fail") throw new Error("prompt failed after output");
       return { stopReason: "end_turn" };
+    })
+    .onRequest(acp.methods.agent.session.close, async (ctx) => {
+      log(`close-start:${ctx.params.sessionId}`);
+      if (mode === "close-timeout") {
+        await new Promise(() => {});
+      }
+      if (mode === "close-fail") throw new Error("close rejected");
+      if (mode === "close-delay") await new Promise((resolve) => setTimeout(resolve, 150));
+      log(`close-complete:${ctx.params.sessionId}`);
+      return {};
     })
     .onNotification(acp.methods.agent.session.cancel, async (ctx) => {
       log(`cancel:${ctx.params.sessionId}`);

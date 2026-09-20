@@ -67,9 +67,10 @@ A public tool-contract change normally begins here and must stay synchronized wi
 9. Let the adapter apply provider-specific session configuration.
 10. Persist a newly created session before prompting.
 11. Send one prompt and collect bounded text/provider summaries.
-12. Touch resumed session metadata after successful completion.
-13. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
-14. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
+12. Run the adapter's optional successful-session completion hook.
+13. Touch resumed session metadata after successful completion.
+14. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
+15. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
 
 Provider-name branches should not be added here when the `ProviderAdapter` contract can express the difference.
 
@@ -169,6 +170,7 @@ Important consequences:
 | CLI default | `grok` | explicit `CODEX_AGENT_RELAY_CURSOR_COMMAND` required | `opencode` | `dsh --profile acp` |
 | Authentication | `xai.api_key` when available, otherwise `cached_token` | `cursor_login` | `opencode-login` when advertised; no auth request when none advertised | no authenticate request |
 | Existing session | common load behavior | common load behavior with persisted mode/model checks | prefers ACP resume, falls back to load; `resume: false` forces load | resume only when advertised; never load or fall back to new |
+| Successful completion | process cleanup | process cleanup | process cleanup | requires advertised `session/close`; waits for close before reporting success |
 | Interactive questions | not supported | question requests are skipped; plan approval rejected | question permission is disabled in child env | noninteractive prompt prefix only |
 | Permission request | unexpected -> fail/cancel | reject once when possible and fail with structured summary | allow once when offered; otherwise fail | reject once when offered; never allow; fail with PERMISSION_REQUIRED. Refuses automatic approvals, not hard isolation |
 | Provider summaries | plain text result | tool calls, todos, subagents, interactions, images | usage and tool-call summaries | usage and tool-call summaries |
@@ -202,6 +204,8 @@ There are three cancellation sources:
 - Relay shutdown.
 
 The runner first attempts the ACP session-cancel notification when possible, waits within the cancellation grace period, then terminates the process tree. Cancellation and termination are single-flight operations so concurrent shutdown paths do not repeat notifications or signals.
+
+On a successful DSH prompt, the adapter waits for `session/close` before the result can succeed. The close response is the provider-level confirmation that session updates, descendants, and persistence have been finalized. Process-tree cleanup still runs afterward and remains authoritative for worker cleanup. The runner starts that cleanup while the ACP connection still owns the worker root so Windows can retain its existing descendant-cleanup proof; cancellation and error paths continue to use the normal cancel/termination flow.
 
 On POSIX systems the provider is spawned in its own process group. Cleanup sends group-level `SIGTERM`, escalates to `SIGKILL`, and confirms both group disappearance and direct-child exit; processes that escape the original group are outside this guarantee. After those signals, confirmation retries transient unknown process-group probes (`EPERM` and other non-`ESRCH` errors) only inside the existing TERM/KILL confirmation deadlines, then fails closed if the last probe is still unknown. `EPERM` and direct-child exit alone never count as group disappearance. Windows invokes the absolute `%SystemRoot%\System32\taskkill.exe` path with `/T /F`, without a shell, and confirms both a successful helper exit and direct-child exit. This is confirmation of the `taskkill` operation, not Job Object or crash-proof containment. A Windows root that exits before tree termination is conservatively unconfirmed because the relay can no longer establish descendant cleanup.
 

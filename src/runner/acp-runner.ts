@@ -95,6 +95,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     let completedResult: R | undefined;
     let pendingError: RelayFailure | undefined;
     let cleanupReport: TerminationReport | undefined;
+    let eagerCleanup: Promise<TerminationReport> | undefined;
     let unexpectedCleanupError: unknown;
     let hasUnexpectedCleanupError = false;
     const leaseErrors: RelayFailure[] = [];
@@ -307,6 +308,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         }
         if (this.adapter.configureSession) {
           await this.adapter.configureSession(ctx, sessionId as string, input, {
+            agentCapabilities: initialized.agentCapabilities,
             configOptions,
             modes: sessionModes,
             metadata,
@@ -326,6 +328,16 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
             "Grok requested permission despite --always-approve",
             partial(),
           );
+        }
+        if (this.adapter.completeSession) {
+          try {
+            await this.adapter.completeSession(ctx, sessionId as string, totalAbort.signal);
+          } finally {
+            // Start tree cleanup while the ACP connection still keeps the worker root alive.
+            // This is required on Windows, where a root that exits before taskkill starts
+            // cannot provide proof that its descendants were also removed.
+            eagerCleanup ??= processTree?.terminate();
+          }
         }
         if (record) await this.store.touch(record);
         return response.stopReason;
@@ -377,7 +389,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         if (worker.state === "created" || worker.state === "pending") {
           try {
             cleanupReport = processTree
-              ? await processTree.terminate()
+              ? await (eagerCleanup ?? processTree.terminate())
               : { forced: false, confirmed: false, reason: "The worker process tree controller is unavailable" };
           } catch (error) {
             cleanupReport = { forced: false, confirmed: false, reason: String(error) };

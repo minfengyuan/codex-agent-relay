@@ -32,6 +32,7 @@ export type PermissionRuntime<R extends RelayResult> = {
 };
 
 export type SessionExtras = {
+  agentCapabilities: acp.AgentCapabilities | null | undefined;
   configOptions: readonly acp.SessionConfigOption[] | null | undefined;
   modes: acp.SessionModeState | null | undefined;
   metadata: Pick<SessionRecord, "model" | "mode">;
@@ -57,6 +58,11 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
     sessionId: string,
     input: I,
     extras: SessionExtras,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  completeSession?(
+    ctx: acp.ClientContext,
+    sessionId: string,
     signal?: AbortSignal,
   ): Promise<void>;
 };

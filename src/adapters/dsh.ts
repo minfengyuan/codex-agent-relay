@@ -7,6 +7,7 @@ import {
   abortFailure,
   cancelledPermission,
   configSelectValues,
+  hasCloseCapability,
   hasResumeCapability,
 } from "../runner/helpers.js";
 import { boundedString, withTimeout } from "../runner/limits.js";
@@ -68,6 +69,12 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
         : cancelledPermission();
     },
     async configureSession(ctx, sessionId, input, extras, signal) {
+      if (!hasCloseCapability(extras.agentCapabilities)) {
+        throw new RelayFailure(
+          "SESSION_CLOSE_UNSUPPORTED",
+          "DSH did not advertise session close capability",
+        );
+      }
       const requested = [
         ["model", input.model],
         ["reasoning_effort", input.reasoningEffort],
@@ -91,6 +98,24 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
         if (signal?.aborted) abortFailure(signal);
         options = [...response.configOptions];
       }
+    },
+    async completeSession(ctx, sessionId, signal) {
+      if (signal?.aborted) abortFailure(signal);
+      try {
+        await withTimeout(
+          ctx.request(acp.methods.agent.session.close, { sessionId }),
+          config.phaseTimeoutMs,
+          "SESSION_CLOSE_TIMEOUT",
+          "DSH session close timed out",
+        );
+      } catch (error) {
+        if (error instanceof RelayFailure) throw error;
+        throw new RelayFailure(
+          "SESSION_CLOSE_FAILED",
+          `DSH session close failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (signal?.aborted) abortFailure(signal);
     },
   };
 }

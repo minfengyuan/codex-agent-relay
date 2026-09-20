@@ -27,6 +27,14 @@ export function hasResumeCapability(capabilities: unknown): boolean {
   return resume !== undefined && resume !== null;
 }
 
+export function hasCloseCapability(capabilities: unknown): boolean {
+  if (!capabilities || typeof capabilities !== "object") return false;
+  const close = (capabilities as {
+    sessionCapabilities?: { close?: unknown } | null;
+  }).sessionCapabilities?.close;
+  return close !== undefined && close !== null;
+}
+
 export function configSelectValues(option: acp.SessionConfigOption): string[] {
   if (option.type !== "select") return [];
   const values: string[] = [];

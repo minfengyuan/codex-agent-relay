@@ -126,6 +126,8 @@ describe("DshRunner", () => {
     expect(events).toContain("new:");
     expect(events).toContain("This is a noninteractive delegated task.");
     expect(events).not.toContain("set-config:");
+    expect(events.indexOf("prompt:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
+    expect(events).toContain("close-complete:fake-session-1");
     expect(events).not.toContain('"readTextFile":true');
     expect(events).not.toContain('"terminal":true');
   });
@@ -185,6 +187,72 @@ describe("DshRunner", () => {
     expect(events).toContain("resume:fake-session-1");
     expect(events).not.toContain("load:");
     expect(events.match(/new:/g)).toHaveLength(1);
+    expect(events.match(/close-complete:fake-session-1/g)).toHaveLength(2);
+  });
+
+  it("requires session close capability before prompting", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "no-close");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "no-close.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await expect(new DshRunner(config(state), new SessionStore(state, "dsh")).delegate({
+      task: "one",
+      cwd,
+    })).rejects.toMatchObject({
+      code: "SESSION_CLOSE_UNSUPPORTED",
+      partial: { provider: "dsh", sessionId: "fake-session-1" },
+    });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain("new:");
+    expect(events).not.toContain("prompt:");
+    expect(events).not.toContain("close-start:");
+  });
+
+  it("does not return success until session close completes", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "close-delay");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "close-delay.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const pending = new DshRunner(config(state), new SessionStore(state, "dsh")).delegate({ task: "one", cwd });
+    await waitForLog(log, "close-start:fake-session-1");
+    const early = await Promise.race([
+      pending.then(() => "settled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 30)),
+    ]);
+    expect(early).toBe("pending");
+    await expect(pending).resolves.toMatchObject({ stopReason: "end_turn", text: "fresh answer" });
+    expect(await readFile(log, "utf8")).toContain("close-complete:fake-session-1");
+  });
+
+  it.each([
+    ["close-timeout", "SESSION_CLOSE_TIMEOUT"],
+    ["close-fail", "SESSION_CLOSE_FAILED"],
+  ] as const)("returns partial output when %s prevents a confirmed close", async (mode, code) => {
+    vi.stubEnv("FAKE_ACP_MODE", mode);
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, `${mode}.log`);
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const store = new SessionStore(state, "dsh");
+    await expect(new DshRunner(config(state, { phaseTimeoutMs: 300 }), store).delegate({ task: "one", cwd }))
+      .rejects.toMatchObject({
+        code,
+        partial: {
+          provider: "dsh",
+          sessionId: "fake-session-1",
+          text: "fresh answer",
+          toolCalls: expect.arrayContaining([expect.objectContaining({ toolCallId: "t1" })]),
+          usage: { used: 42, size: 128, cost: { amount: 3.5, currency: "USD" } },
+        },
+      });
+    const events = await readFile(log, "utf8");
+    expect(events.indexOf("prompt:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
+    expect(events).not.toContain("cancel:fake-session-1");
+    const lease = await store.acquire(cwd);
+    await lease.markReaped("no-worker-created");
+    await lease.release();
   });
 
   it("fails RESUME_UNSUPPORTED without load or replacement session", async () => {
