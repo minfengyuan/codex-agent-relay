@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { dshSpawnSpec } from "../src/adapters/dsh.js";
 import { loadConfig } from "../src/config.js";
 import { cleanupAllChildren, DshRunner } from "../src/runner.js";
 import { SessionStore } from "../src/store.js";
@@ -37,9 +38,11 @@ describeReal("real DSH ACP smoke", () => {
     if (process.env.CODEX_AGENT_RELAY_DELEGATED === "1") {
       throw new Error("Real DSH smoke is unavailable inside a delegated worker (NESTED_DELEGATION); run it from the parent environment");
     }
-    const command = loadConfig().dshCommand || "dsh";
-    await execFileAsync(command, ["--version"], { timeout: 15_000 });
-    await execFileAsync(command, ["--profile", "acp", "--help"], { timeout: 15_000 });
+    const loaded = loadConfig();
+    const version = dshSpawnSpec({ ...loaded, dshCommandArgs: ["--version"] });
+    await execFileAsync(version.command, version.args, { timeout: 15_000 });
+    const help = dshSpawnSpec({ ...loaded, dshCommandArgs: ["--profile", "acp", "--help"] });
+    await execFileAsync(help.command, help.args, { timeout: 15_000 });
 
     const root = await mkdtemp(join(tmpdir(), "dsh-real-"));
     roots.push(root);
@@ -47,7 +50,7 @@ describeReal("real DSH ACP smoke", () => {
     const workspace = join(root, "workspace");
     await mkdir(workspace);
     await writeFile(join(workspace, "README.md"), "workspace\n");
-    const config = { ...loadConfig(), stateDir: state, totalTimeoutMs: TASK_TIMEOUT_MS };
+    const config = { ...loaded, stateDir: state, totalTimeoutMs: TASK_TIMEOUT_MS };
     const nonce = randomUUID();
     try {
       const created = await new DshRunner(config, new SessionStore(state, "dsh")).delegate({

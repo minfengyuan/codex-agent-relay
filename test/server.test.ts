@@ -258,7 +258,7 @@ describe("MCP server", () => {
       text: "partial text",
       toolCalls: expect.arrayContaining([expect.objectContaining({ toolCallId: "t1" })]),
       usage: { used: 42, size: 128, cost: { amount: 3.5, currency: "USD" } },
-      error: { code: process.platform === "win32" ? "PROCESS_CLEANUP_FAILED" : "ACP_FAILURE" },
+      error: { code: "ACP_FAILURE" },
     });
 
     vi.stubEnv("FAKE_ACP_MODE", "hang");

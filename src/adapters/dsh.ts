@@ -12,12 +12,19 @@ import {
 import { boundedString, withTimeout } from "../runner/limits.js";
 import { StandardSummaries } from "../runner/summaries.js";
 import type { ProgressReporter, ProviderAdapter } from "../runner/types.js";
+import { resolveWindowsDshLauncher } from "./dsh-windows-command.js";
 
-export function dshSpawnSpec(config: RelayConfig): { command: string; args: string[] } {
-  return {
-    command: config.dshCommand?.trim() || "dsh",
-    args: config.dshCommandArgs ?? ["--profile", "acp"],
-  };
+export { resolveWindowsDshLauncher };
+
+export function dshSpawnSpec(
+  config: RelayConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[] } {
+  const command = config.dshCommand?.trim() || "dsh";
+  const args = config.dshCommandArgs ?? ["--profile", "acp"];
+  if (process.platform !== "win32") return { command, args };
+  const resolved = resolveWindowsDshLauncher(command, env);
+  return { command: resolved.command, args: [...resolved.prefixArgs, ...args] };
 }
 
 function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshRelayResult> {

@@ -61,7 +61,9 @@ Grok defaults to the `grok` command, OpenCode defaults to `opencode`, and DSH de
 CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
-If needed, the Grok, OpenCode, and DSH executables can also be overridden with `CODEX_AGENT_RELAY_GROK_COMMAND`, `CODEX_AGENT_RELAY_OPENCODE_COMMAND`, and `CODEX_AGENT_RELAY_DSH_COMMAND`. DSH arguments have no environment override; the relay always launches `dsh --profile acp`.
+If needed, the Grok, OpenCode, and DSH executables can also be overridden with `CODEX_AGENT_RELAY_GROK_COMMAND`, `CODEX_AGENT_RELAY_OPENCODE_COMMAND`, and `CODEX_AGENT_RELAY_DSH_COMMAND`. DSH arguments have no environment override; the relay always launches with `--profile acp`.
+
+On Windows, the relay does not spawn `dsh.cmd` through `cmd.exe` or `shell: true`. It resolves a bare or configured command with `PATH`/`PATHEXT`, keeps native `.exe`/`.com` launchers, runs `.js`/`.mjs` entries with the current Node executable, and for known npm/pnpm `.cmd` shims it validates the generated launcher structure, verifies that the referenced file is the package's `bin.dsh`, then spawns `node` with that entry plus the original DSH arguments. Unsupported `.bat` files, malformed shims, missing entries, and mismatched packages fail with `ACP_FAILURE`. Safe `CODEX_AGENT_RELAY_DSH_COMMAND` overrides are a native DSH executable or the official DSH `.js`/`.mjs` entry.
 
 Process cleanup can be tuned in milliseconds with `CODEX_AGENT_RELAY_CANCEL_GRACE_MS` (ACP cancellation grace), `CODEX_AGENT_RELAY_TERM_GRACE_MS` (POSIX `SIGTERM` grace), and `CODEX_AGENT_RELAY_KILL_CONFIRM_MS` (forced-termination confirmation, default `2000`). Invalid or non-positive values use their defaults.
 
@@ -98,7 +100,7 @@ Each call needs a task and an absolute working directory. Returned `sessionId` v
 
 ### DSH (`dsh_delegate`)
 
-DSH is DeepSeek Harness. Install and configure the `dsh` CLI before delegating. The relay preflights `dsh --version` and `dsh --profile acp --help` in opt-in real tests; production calls spawn `dsh --profile acp`.
+DSH is DeepSeek Harness. Install and configure the `dsh` CLI before delegating. Production calls and opt-in real-test preflights (`--version` and `--profile acp --help`) use the same launcher resolution: `dsh --profile acp` on POSIX, and on Windows a `shell: false` spawn of `node` plus the verified `@deepseek-ai/dsh` entry when the PATH hit is an npm/pnpm `.cmd` shim.
 
 Tool inputs:
 

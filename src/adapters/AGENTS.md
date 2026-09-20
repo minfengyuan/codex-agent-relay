@@ -83,7 +83,7 @@ When changing an existing adapter, walk through the contract in this order:
 
 ### DSH
 
-- Command defaults to `dsh` with args `--profile acp`. `CODEX_AGENT_RELAY_DSH_COMMAND` may override the executable; `dshCommandArgs` is a complete test override with no args env.
+- Command defaults to `dsh` with args `--profile acp`. `CODEX_AGENT_RELAY_DSH_COMMAND` may override the executable; `dshCommandArgs` is a complete test override with no args env. On Windows, resolve that executable in this adapter under `shell: false`: PATH/PATHEXT lookup, native `.exe`/`.com`, direct `.js`/`.mjs` via `process.execPath`, and conservative parsing of known npm/pnpm `.cmd` shims to `@deepseek-ai/dsh/lib/bin.js` after `bin.dsh` verification. Do not spawn `cmd.exe` or set `shell: true`.
 - Do not send an authenticate request. Advertised client capabilities are empty.
 - Existing sessions use ACP resume only when `hasResumeCapability` is present; otherwise fail with `RESUME_UNSUPPORTED`. Never load or create a replacement session.
 - `model` and `reasoningEffort` map to advertised `model` and `reasoning_effort` config options. Refresh `configOptions` after each set. Missing options are `CONFIG_UNSUPPORTED`; invalid values are `INVALID_CONFIG`.

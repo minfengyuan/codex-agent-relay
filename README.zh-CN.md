@@ -61,7 +61,9 @@ Grok 默认使用 `grok` 命令，OpenCode 默认使用 `opencode`，DSH 默认�
 CODEX_AGENT_RELAY_CURSOR_COMMAND = "/ABSOLUTE/PATH/TO/cursor-agent"
 ```
 
-如有需要，也可以通过 `CODEX_AGENT_RELAY_GROK_COMMAND`、`CODEX_AGENT_RELAY_OPENCODE_COMMAND` 和 `CODEX_AGENT_RELAY_DSH_COMMAND` 覆盖 Grok / OpenCode / DSH 的可执行文件路径。DSH 参数没有环境变量覆盖；relay 始终以 `dsh --profile acp` 启动。
+如有需要，也可以通过 `CODEX_AGENT_RELAY_GROK_COMMAND`、`CODEX_AGENT_RELAY_OPENCODE_COMMAND` 和 `CODEX_AGENT_RELAY_DSH_COMMAND` 覆盖 Grok / OpenCode / DSH 的可执行文件路径。DSH 参数没有环境变量覆盖；relay 始终以 `--profile acp` 启动。
+
+在 Windows 上，relay 不会通过 `cmd.exe` 或 `shell: true` 启动 `dsh.cmd`。它会用 `PATH`/`PATHEXT` 解析裸命令或配置的命令：保留原生 `.exe`/`.com`；用当前 Node 可执行文件运行 `.js`/`.mjs`；对已知的 npm/pnpm `.cmd` shim，先校验生成器产生的启动结构，再确认其引用文件是该包的 `bin.dsh`，最后以 `node` 加上该入口和原来的 DSH 参数启动。不受支持的 `.bat`、畸形 shim、缺失入口或不匹配的包会以 `ACP_FAILURE` 失败。安全的 `CODEX_AGENT_RELAY_DSH_COMMAND` 覆盖值是原生 DSH 可执行文件或官方 DSH `.js`/`.mjs` 入口。
 
 进程清理可通过以下毫秒配置调整：`CODEX_AGENT_RELAY_CANCEL_GRACE_MS`（ACP 取消宽限）、`CODEX_AGENT_RELAY_TERM_GRACE_MS`（POSIX `SIGTERM` 宽限）和 `CODEX_AGENT_RELAY_KILL_CONFIRM_MS`（强制终止确认，默认 `2000`）。非法值或非正数会回退到默认值。
 
@@ -98,7 +100,7 @@ relay 会向 Codex 暴露四个工具：
 
 ### DSH（`dsh_delegate`）
 
-DSH 即 DeepSeek Harness。委派前请先安装并配置好 `dsh` CLI。opt-in 真实测试会分别执行 `dsh --version` 与 `dsh --profile acp --help` 预检；生产调用会启动 `dsh --profile acp`。
+DSH 即 DeepSeek Harness。委派前请先安装并配置好 `dsh` CLI。生产调用和 opt-in 真实测试预检（`--version` 与 `--profile acp --help`）共用同一套启动器解析：POSIX 上是 `dsh --profile acp`；Windows 上若 PATH 命中的是 npm/pnpm `.cmd` shim，则以 `shell: false` 启动 `node` 加上经过校验的 `@deepseek-ai/dsh` 入口。
 
 工具输入：
 
