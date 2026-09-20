@@ -44,6 +44,22 @@ describe("GrokRunner", () => {
     expect(events).toContain("delegated:1");
   });
 
+  it("exposes only session IDs backed by relay records", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const store = new SessionStore(state);
+    const writeNew = vi.spyOn(store, "writeNew").mockRejectedValueOnce(new RelayFailure("STATE_IO", "injected write failure"));
+    await expect(new GrokRunner(config(state), store).delegate({ task: "new", cwd }))
+      .rejects.toMatchObject({ code: "STATE_IO", partial: { sessionId: null } });
+
+    writeNew.mockRestore();
+    await store.writeNew("saved-session", cwd);
+    vi.stubEnv("FAKE_ACP_MODE", "load-fail");
+    await expect(new GrokRunner(config(state), store).delegate({ task: "existing", cwd, sessionId: "saved-session" }))
+      .rejects.toMatchObject({ code: "ACP_FAILURE", partial: { sessionId: "saved-session" } });
+  });
+
   it("rejects nested delegation and ignores the old loop-guard key", async () => {
     vi.stubEnv("XAI_API_KEY", "");
     const state = await tempDir();

@@ -81,6 +81,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     const cwd = input.cwd;
     let lease: WorkspaceLease | undefined;
     let sessionId: string | null = input.sessionId ?? null;
+    let resumableSessionId: string | null = null;
     let text = "";
     let truncated = false;
     let stderr = "";
@@ -101,7 +102,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     const leaseErrors: RelayFailure[] = [];
     const summarizer = this.adapter.createSummarizer(Math.max(64 * 1_024, this.config.textLimitBytes));
     const partial = (): Partial<R> => ({
-      sessionId,
+      sessionId: resumableSessionId,
       text,
       truncated: truncated || summarizer.truncated,
       ...summarizer.result(),
@@ -131,6 +132,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       lease = await this.store.acquire(cwd);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const record = input.sessionId ? await this.store.read(input.sessionId, cwd) : undefined;
+      if (record) resumableSessionId = record.sessionId;
       const metadata = this.adapter.sessionMetadata(input, record);
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
       const invocation = this.adapter.command(input, record);
@@ -306,6 +308,10 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
           sessionModes = created.modes;
           configOptions = created.configOptions;
         }
+        if (!record && this.adapter.persistNewSessionBeforeConfigure) {
+          await this.store.writeNew(sessionId as string, cwd, metadata);
+          resumableSessionId = sessionId;
+        }
         if (this.adapter.configureSession) {
           await this.adapter.configureSession(ctx, sessionId as string, input, {
             agentCapabilities: initialized.agentCapabilities,
@@ -314,7 +320,10 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
             metadata,
           }, totalAbort.signal);
         }
-        if (!record) await this.store.writeNew(sessionId as string, cwd, metadata);
+        if (!record && !this.adapter.persistNewSessionBeforeConfigure) {
+          await this.store.writeNew(sessionId as string, cwd, metadata);
+          resumableSessionId = sessionId;
+        }
 
         promptStarted = true;
         if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
@@ -352,7 +361,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         }),
       ]);
       completedResult = {
-        sessionId,
+        sessionId: resumableSessionId,
         stopReason,
         text,
         truncated: truncated || summarizer.truncated,

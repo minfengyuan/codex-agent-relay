@@ -59,6 +59,7 @@ if (mode === "malformed") {
     })
     .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
       log(`set-config:${ctx.params.configId}:${ctx.params.value}`);
+      if (mode === "config-fail") throw new Error("config rejected");
       if (mode === "config-timeout" || (mode === "config-hang-effort" && ctx.params.configId === "reasoning_effort")) {
         while (!cancelled) await new Promise((resolve) => setTimeout(resolve, 10));
         return { configOptions };

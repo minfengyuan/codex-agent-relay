@@ -112,7 +112,7 @@ DSH 即 DeepSeek Harness。委派前请先安装并配置好 `dsh` CLI。生产�
 | `model` | 否 | CLI 声明的不透明 `model` 会话选项 |
 | `reasoningEffort` | 否 | CLI 声明的不透明 `reasoning_effort` 会话选项 |
 
-同时提供 `model` 和 `reasoningEffort` 时，relay 先设置 `model`，再设置 `reasoning_effort`，取值必须是当前会话声明的选项。省略任一字段则保留 CLI 现有配置。未声明或不合法的值会失败关闭（`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`）。
+同时提供 `model` 和 `reasoningEffort` 时，relay 先设置 `model`，再设置 `reasoning_effort`，取值必须是当前会话声明的选项。省略任一字段则保留 CLI 现有配置。未声明或不合法的值会失败关闭（`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`）。新建 DSH 会话时，relay 会在配置前保存会话绑定；因此配置失败的 partial result 会包含可恢复的 `sessionId`，可在相同 `cwd` 下重试。relay 记录未经确认时不会对外暴露会话 ID。
 
 成功结果包含 `provider: "dsh"`、有界 `text`，以及可选的 `toolCalls` / `usage`；摘要超限时带 `summariesTruncated`。在报告成功前，relay 要求 DSH 声明 `session/close` 能力并等待关闭请求完成，以确认会话更新和持久化已经收尾。缺少能力、关闭超时或关闭失败分别返回 `SESSION_CLOSE_UNSUPPORTED`、`SESSION_CLOSE_TIMEOUT` 或 `SESSION_CLOSE_FAILED`；已经产生的输出保留在 partial result 中。权限请求会被拒绝（有 `reject_once` 时选择拒绝）并以 `PERMISSION_REQUIRED` 中止。
 

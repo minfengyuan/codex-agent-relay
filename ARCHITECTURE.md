@@ -64,13 +64,14 @@ A public tool-contract change normally begins here and must stay synchronized wi
 6. Connect ACP over NDJSON on the child's stdin/stdout.
 7. Initialize and, when required, authenticate.
 8. Create, load, or resume a session.
-9. Let the adapter apply provider-specific session configuration.
-10. Persist a newly created session before prompting.
-11. Send one prompt and collect bounded text/provider summaries.
-12. Run the adapter's optional successful-session completion hook.
-13. Touch resumed session metadata after successful completion.
-14. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
-15. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
+9. For adapters that require recoverable configuration failures, persist a newly created session immediately.
+10. Let the adapter apply provider-specific session configuration.
+11. Persist any remaining newly created session before prompting.
+12. Send one prompt and collect bounded text/provider summaries.
+13. Run the adapter's optional successful-session completion hook.
+14. Touch resumed session metadata after successful completion.
+15. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
+16. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
 
 Provider-name branches should not be added here when the `ProviderAdapter` contract can express the difference.
 
@@ -159,9 +160,11 @@ The relay persists only the metadata needed to safely reconnect Codex to a provi
 Important consequences:
 
 - A returned `sessionId` is provider-specific and must be sent back to the same MCP tool/provider.
+- Results and partial errors expose a `sessionId` only after its relay record has been read or written successfully, so any returned ID is eligible for relay resume from its bound `cwd`.
 - A session is tied to the resolved working directory to prevent accidental continuation in another checkout/worktree.
 - Provider options that must remain stable across a session belong in persisted metadata when necessary. Cursor currently persists model/mode semantics; Grok, OpenCode, and DSH currently do not persist extra adapter metadata.
 - Provider capability negotiation decides whether an existing session can be resumed or loaded.
+- DSH persists a new relay record before session configuration so validation, setting, timeout, or cancellation failures can return a resumable ID. Other providers keep configuration-before-persistence behavior unless their adapter opts in.
 
 ## Provider behavior matrix
 

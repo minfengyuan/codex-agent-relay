@@ -372,45 +372,67 @@ describe("DshRunner", () => {
     expect(await readFile(join(state, "effort-only.log"), "utf8")).not.toContain("set-config:model:");
   });
 
-  it("rejects missing, invalid, and timed-out config without prompting", async () => {
+  it.each([
+    ["invalid-session", "", { model: "missing/model" }, "INVALID_CONFIG"],
+    ["unsupported-session", "no-effort", { reasoningEffort: "high" }, "CONFIG_UNSUPPORTED"],
+    ["rejected-session", "config-fail", { model: "dsh/gpt" }, "ACP_FAILURE"],
+    ["partial-config-session", "grouped", { model: "dsh/fast", reasoningEffort: "high" }, "INVALID_CONFIG"],
+    ["timeout-session", "config-timeout", { model: "dsh/gpt" }, "CONFIG_TIMEOUT"],
+  ] as const)("persists and exposes %s when configuration fails", async (sessionId, mode, options, code) => {
     const state = await tempDir();
     const cwd = await tempDir();
-    const log = join(state, "invalid.log");
+    const log = join(state, `${sessionId}.log`);
+    vi.stubEnv("FAKE_SESSION_ID", sessionId);
+    vi.stubEnv("FAKE_ACP_MODE", mode);
     vi.stubEnv("FAKE_ACP_LOG", log);
-    await expect(new DshRunner(config(state), new SessionStore(state, "dsh")).delegate({
+    const store = new SessionStore(state, "dsh");
+    const failure = await new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), store).delegate({
       task: "one",
       cwd,
-      model: "missing/model",
-    })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+      ...options,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toMatchObject({ code, partial: { sessionId } });
+    await expect(store.read(sessionId, cwd)).resolves.toMatchObject({ sessionId, cwd });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain("new:");
+    expect(events).not.toContain("prompt:");
 
-    vi.stubEnv("FAKE_ACP_MODE", "no-effort");
-    await expect(new DshRunner(config(state), new SessionStore(state, "dsh")).delegate({
-      task: "one",
-      cwd,
-      reasoningEffort: "high",
-    })).rejects.toMatchObject({ code: "CONFIG_UNSUPPORTED" });
+    if (sessionId === "invalid-session") {
+      vi.stubEnv("FAKE_ACP_MODE", "");
+      const resumed = await new DshRunner(config(state), store).delegate({
+        task: "resume after configuration repair",
+        cwd,
+        sessionId,
+        model: "dsh/gpt",
+      });
+      expect(resumed).toMatchObject({ sessionId, text: "fresh answer" });
+      expect(await readFile(log, "utf8")).toContain(`resume:${sessionId}`);
+    }
+  });
 
-    vi.stubEnv("FAKE_ACP_MODE", "grouped");
-    await expect(new DshRunner(config(state), new SessionStore(state, "dsh")).delegate({
-      task: "one",
-      cwd,
-      model: "dsh/fast",
-      reasoningEffort: "high",
-    })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
-
-    vi.stubEnv("FAKE_ACP_MODE", "config-timeout");
-    await expect(new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), new SessionStore(state, "dsh")).delegate({
+  it("stops before configuration when the new session record conflicts", async () => {
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "session-conflict.log");
+    vi.stubEnv("FAKE_SESSION_ID", "conflicting-session");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const store = new SessionStore(state, "dsh");
+    await store.writeNew("conflicting-session", cwd);
+    await expect(new DshRunner(config(state), store).delegate({
       task: "one",
       cwd,
       model: "dsh/gpt",
-    })).rejects.toMatchObject({ code: "CONFIG_TIMEOUT" });
-
+    })).rejects.toMatchObject({
+      code: "STATE_CONFLICT",
+      partial: { sessionId: null },
+    });
     const events = await readFile(log, "utf8");
+    expect(events).toContain("new:");
+    expect(events).not.toContain("set-config:");
     expect(events).not.toContain("prompt:");
-    expect(events).not.toContain("set-config:model:missing/model");
-    expect(events).not.toContain("set-config:reasoning_effort:high");
-    expect(events).toContain("set-config:model:dsh/fast");
-    expect(events).toContain("set-config:model:dsh/gpt");
   });
 
   it("does not send the prompt after abort during the reasoning_effort request", async () => {
@@ -432,7 +454,9 @@ describe("DshRunner", () => {
     await expect(pending).rejects.toMatchObject({
       code: "CANCELLED",
       message: "MCP request was cancelled",
+      partial: { sessionId: "fake-session-1" },
     });
+    await expect(store.read("fake-session-1", cwd)).resolves.toMatchObject({ sessionId: "fake-session-1", cwd });
     const events = await readFile(log, "utf8");
     expect(events).toContain("set-config:model:dsh/gpt");
     expect(events).toContain("set-config:reasoning_effort:high");

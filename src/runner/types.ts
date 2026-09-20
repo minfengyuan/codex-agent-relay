@@ -47,6 +47,7 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
   capabilities: acp.ClientCapabilities;
   prompt(task: string): string;
   sessionMetadata(input: I, record?: SessionRecord): Pick<SessionRecord, "model" | "mode">;
+  persistNewSessionBeforeConfigure?: boolean;
   spawnEnv?(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   existingSession?(initialized: acp.InitializeResponse, input: I): ExistingSessionAction;
   validateInput?(input: I): void;

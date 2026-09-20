@@ -41,6 +41,7 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
     capabilities: {},
     prompt: (task) => `This is a noninteractive delegated task. Do not ask the user questions. Resolve minor ambiguity conservatively. If a material decision is unresolved, stop and report it.\n\n${task}`,
     sessionMetadata: () => ({}),
+    persistNewSessionBeforeConfigure: true,
     existingSession(initialized) {
       if (!hasResumeCapability(initialized.agentCapabilities)) {
         throw new RelayFailure("RESUME_UNSUPPORTED", "DSH did not advertise session resume capability");
