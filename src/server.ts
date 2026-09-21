@@ -139,9 +139,9 @@ function isDshPartial(value: RelayResultPartial | undefined): value is Partial<D
   return value !== undefined && "provider" in value && value.provider === "dsh";
 }
 
-function errorFields(failure: RelayFailure, sessionId: string | undefined) {
+function errorFields(failure: RelayFailure) {
   return {
-    sessionId: failure.partial?.sessionId ?? sessionId ?? null,
+    sessionId: failure.partial?.sessionId ?? null,
     stopReason: failure.partial?.stopReason ?? null,
     text: failure.partial?.text ?? "",
     truncated: failure.partial?.truncated ?? false,
@@ -225,7 +225,7 @@ export function createRelayServer(config: RelayConfig): McpServer {
       cwd,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
     }, signal, progress),
-    toErrorResult: (failure, input): GrokRelayResult => errorFields(failure, input.sessionId),
+    toErrorResult: (failure): GrokRelayResult => errorFields(failure),
   });
 
   registerDelegateTool(server, {
@@ -241,10 +241,10 @@ export function createRelayServer(config: RelayConfig): McpServer {
       ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
     }, signal, progress),
-    toErrorResult: (failure, input): CursorRelayResult => {
+    toErrorResult: (failure): CursorRelayResult => {
       const extra = isCursorPartial(failure.partial) ? failure.partial : undefined;
       return {
-        ...errorFields(failure, input.sessionId),
+        ...errorFields(failure),
         provider: "cursor",
         ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
         ...(extra?.todos ? { todos: extra.todos } : {}),
@@ -271,10 +271,10 @@ export function createRelayServer(config: RelayConfig): McpServer {
       ...(input.effort === undefined ? {} : { effort: input.effort }),
       ...(input.agent === undefined ? {} : { agent: input.agent }),
     }, signal, progress),
-    toErrorResult: (failure, input): OpenCodeRelayResult => {
+    toErrorResult: (failure): OpenCodeRelayResult => {
       const extra = isOpenCodePartial(failure.partial) ? failure.partial : undefined;
       return {
-        ...errorFields(failure, input.sessionId),
+        ...errorFields(failure),
         provider: "opencode",
         ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
         ...(extra?.usage ? { usage: extra.usage } : {}),
@@ -296,10 +296,10 @@ export function createRelayServer(config: RelayConfig): McpServer {
       ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
     }, signal, progress),
-    toErrorResult: (failure, input): DshRelayResult => {
+    toErrorResult: (failure): DshRelayResult => {
       const extra = isDshPartial(failure.partial) ? failure.partial : undefined;
       return {
-        ...errorFields(failure, input.sessionId),
+        ...errorFields(failure),
         provider: "dsh",
         ...(extra?.toolCalls ? { toolCalls: extra.toolCalls } : {}),
         ...(extra?.usage ? { usage: extra.usage } : {}),

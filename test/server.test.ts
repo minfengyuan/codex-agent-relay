@@ -1,5 +1,5 @@
 import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,7 +99,7 @@ describe("MCP server", () => {
     const { server, clientTransport, request } = await harness();
     const response = await request(3, "tools/call", {
       name: "grok_delegate",
-      arguments: { task: "hello", cwd: "relative" },
+      arguments: { task: "hello", cwd: "relative", sessionId: "unconfirmed-session" },
     }) as { result?: { isError?: boolean; content?: Array<{ text?: string }>; structuredContent?: unknown } };
     expect(response.result?.isError).toBe(true);
     expect(JSON.parse(response.result?.content?.[0]?.text ?? "null")).toEqual(response.result?.structuredContent);
@@ -112,6 +112,59 @@ describe("MCP server", () => {
     });
     await clientTransport.close();
     await server.close();
+  });
+
+  it("exposes only session IDs confirmed by the relay store", async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "relay-server-session-cwd-")));
+    const otherCwd = await realpath(await mkdtemp(join(tmpdir(), "relay-server-session-other-")));
+    dirs.push(cwd, otherCwd);
+    const { server, clientTransport, request, stateDir } = await harness({
+      dshCommand: process.execPath,
+      dshCommandArgs: [dshFixture],
+    });
+    const call = async (id: number, sessionId: string, requestCwd = cwd) => {
+      const response = await request(id, "tools/call", {
+        name: "dsh_delegate",
+        arguments: { task: "resume", cwd: requestCwd, sessionId },
+      }) as {
+        result?: {
+          isError?: boolean;
+          content?: Array<{ text?: string }>;
+          structuredContent?: unknown;
+        };
+      };
+      expect(response.result?.isError).toBe(true);
+      expect(JSON.parse(response.result?.content?.[0]?.text ?? "null"))
+        .toEqual(response.result?.structuredContent);
+      return response.result?.structuredContent;
+    };
+
+    try {
+      await expect(call(30, "missing-session")).resolves.toMatchObject({
+        provider: "dsh",
+        sessionId: null,
+        error: { code: "UNKNOWN_SESSION" },
+      });
+
+      const store = new SessionStore(stateDir, "dsh");
+      await store.writeNew("other-cwd-session", otherCwd);
+      await expect(call(31, "other-cwd-session")).resolves.toMatchObject({
+        provider: "dsh",
+        sessionId: null,
+        error: { code: "CWD_MISMATCH" },
+      });
+
+      await store.writeNew("confirmed-session", cwd);
+      vi.stubEnv("FAKE_ACP_MODE", "resume-fail");
+      await expect(call(32, "confirmed-session")).resolves.toMatchObject({
+        provider: "dsh",
+        sessionId: "confirmed-session",
+        error: { code: "ACP_FAILURE" },
+      });
+    } finally {
+      await clientTransport.close();
+      await server.close();
+    }
   });
 
   it("returns a structured Cursor configuration error without affecting Grok configuration", async () => {
