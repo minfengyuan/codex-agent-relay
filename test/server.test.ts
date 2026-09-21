@@ -231,7 +231,7 @@ describe("MCP server", () => {
     await server.close();
   });
 
-  it("rejects trimmed and blank DSH tool inputs", async () => {
+  it("rejects whitespace-only DSH tool inputs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "relay-server-dsh-blank-"));
     dirs.push(cwd);
     const { server, clientTransport, request } = await harness({
@@ -265,7 +265,7 @@ describe("MCP server", () => {
     vi.stubEnv("FAKE_ACP_LOG", log);
     const success = await request(10, "tools/call", {
       name: "dsh_delegate",
-      arguments: { task: "hello", cwd, model: "dsh/gpt", reasoningEffort: "high" },
+      arguments: { task: "hello", cwd, model: "dsh/gpt", reasoningEffort: "" },
       _meta: { progressToken: "dsh-progress" },
     }) as {
       result?: {
@@ -279,8 +279,9 @@ describe("MCP server", () => {
       text: "fresh answer",
       sessionId: "fake-session-1",
     });
-    expect(await readFile(log, "utf8")).toContain("set-config:model:dsh/gpt");
-    expect(await readFile(log, "utf8")).toContain("set-config:reasoning_effort:high");
+    const configEvents = (await readFile(log, "utf8")).split(/\r?\n/);
+    expect(configEvents).toContain("set-config:model:dsh/gpt");
+    expect(configEvents).toContain("set-config:reasoning_effort:");
     const progress = notifications.filter((message) =>
       "method" in message && message.method === "notifications/progress",
     );

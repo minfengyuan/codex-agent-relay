@@ -262,6 +262,7 @@ function defaultConfigOptions(grouped) {
       type: "select",
       currentValue: "medium",
       options: [
+        { value: "", name: "Provider default" },
         { value: "low", name: "Low" },
         { value: "medium", name: "Medium" },
         { value: "high", name: "High" },

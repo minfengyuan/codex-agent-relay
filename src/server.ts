@@ -109,7 +109,10 @@ const dshInputSchema = z.object({
   cwd: z.string().trim().min(1).describe("Existing absolute working directory"),
   sessionId: z.string().trim().min(1).optional().describe("Previously returned DSH session ID"),
   model: z.string().trim().min(1).optional().describe("DSH model session option"),
-  reasoningEffort: z.string().trim().min(1).optional().describe("DSH reasoning_effort session option"),
+  reasoningEffort: z.union([
+    z.literal(""),
+    z.string().trim().min(1),
+  ]).optional().describe("DSH reasoning_effort session option, including an advertised empty provider-default value"),
 });
 
 const dshOutputSchema = outputSchema.extend({

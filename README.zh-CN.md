@@ -110,9 +110,9 @@ DSH 即 DeepSeek Harness。委派前请先安装并配置好 `dsh` CLI。生产�
 | `cwd` | 是 | 已存在的绝对工作目录 |
 | `sessionId` | 否 | 先前返回的 DSH 会话 ID（仅 resume；没有 `resume` 布尔参数） |
 | `model` | 否 | CLI 声明的不透明 `model` 会话选项 |
-| `reasoningEffort` | 否 | CLI 声明的不透明 `reasoning_effort` 会话选项 |
+| `reasoningEffort` | 否 | CLI 声明的不透明 `reasoning_effort` 会话选项；声明时 `""` 合法 |
 
-同时提供 `model` 和 `reasoningEffort` 时，relay 先设置 `model`，再设置 `reasoning_effort`，取值必须是当前会话声明的选项。省略任一字段则保留 CLI 现有配置。未声明或不合法的值会失败关闭（`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`）。新建 DSH 会话时，relay 会在配置前保存会话绑定；因此配置失败的 partial result 会包含可恢复的 `sessionId`，可在相同 `cwd` 下重试。relay 记录未经确认时不会对外暴露会话 ID。
+同时提供 `model` 和 `reasoningEffort` 时，relay 先设置 `model`，再设置 `reasoning_effort`，取值必须是当前会话声明的选项。省略任一字段则保留 CLI 现有配置。当 `reasoning_effort` 将 `""` 声明为 provider default 时，传入 `reasoningEffort: ""` 可选择该值；纯空白值仍然非法。未声明或不合法的值会失败关闭（`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`）。新建 DSH 会话时，relay 会在配置前保存会话绑定；因此配置失败的 partial result 会包含可恢复的 `sessionId`，可在相同 `cwd` 下重试。relay 记录未经确认时不会对外暴露会话 ID。
 
 成功结果包含 `provider: "dsh"`、有界 `text`，以及可选的 `toolCalls` / `usage`；摘要超限时带 `summariesTruncated`。新建或恢复会话前，relay 要求 DSH 声明 `session/close` 能力；报告成功前还会等待关闭请求完成，以确认会话更新和持久化已经收尾。缺少能力、关闭超时或关闭失败分别返回 `SESSION_CLOSE_UNSUPPORTED`、`SESSION_CLOSE_TIMEOUT` 或 `SESSION_CLOSE_FAILED`；已经产生的输出保留在 partial result 中。活动会话异常失败时，relay 会在清理进程树前尝试关闭会话；取消、超时和权限失败会先发送 `session/cancel`。异常路径的关闭失败只作为有界诊断附加，不会覆盖原始错误。权限请求会被拒绝（有 `reject_once` 时选择拒绝）并以 `PERMISSION_REQUIRED` 中止。
 
