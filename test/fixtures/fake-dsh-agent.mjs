@@ -44,13 +44,16 @@ if (mode === "malformed") {
       log(`auth:${ctx.params.methodId}`);
       return {};
     })
-    .onRequest(acp.methods.agent.session.new, (ctx) => {
+    .onRequest(acp.methods.agent.session.new, async (ctx) => {
       log(`new:${ctx.params.cwd}:${process.cwd()}:${ctx.params.mcpServers.length}`);
+      if (mode === "new-fail") throw new Error("new rejected");
+      if (mode === "new-timeout") await new Promise(() => {});
       return { sessionId, configOptions };
     })
     .onRequest(acp.methods.agent.session.resume, async (ctx) => {
       log(`resume:${ctx.params.sessionId}:${ctx.params.cwd}:${ctx.params.mcpServers.length}`);
       if (mode === "resume-fail") throw new Error("resume rejected");
+      if (mode === "resume-timeout") await new Promise(() => {});
       return { configOptions };
     })
     .onRequest(acp.methods.agent.session.load, async (ctx) => {
@@ -59,7 +62,7 @@ if (mode === "malformed") {
     })
     .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
       log(`set-config:${ctx.params.configId}:${ctx.params.value}`);
-      if (mode === "config-fail") throw new Error("config rejected");
+      if (mode === "config-fail" || mode === "config-fail-close-timeout") throw new Error("config rejected");
       if (mode === "config-timeout" || (mode === "config-hang-effort" && ctx.params.configId === "reasoning_effort")) {
         while (!cancelled) await new Promise((resolve) => setTimeout(resolve, 10));
         return { configOptions };
@@ -196,19 +199,23 @@ if (mode === "malformed") {
         sessionId: ctx.params.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: mode === "large" ? "x".repeat(10000) : mode === "partial-fail" ? "partial text" : "fresh answer" },
+          content: { type: "text", text: mode === "large" ? "x".repeat(10000) : mode.startsWith("partial-fail") ? "partial text" : "fresh answer" },
         },
       });
-      if (mode === "partial-fail") throw new Error("prompt failed after output");
+      if (mode.startsWith("partial-fail")) throw new Error("prompt failed after output");
       return { stopReason: "end_turn" };
     })
     .onRequest(acp.methods.agent.session.close, async (ctx) => {
       log(`close-start:${ctx.params.sessionId}`);
-      if (mode === "close-timeout") {
+      if (mode === "close-timeout" || mode === "partial-fail-close-timeout" || mode === "config-fail-close-timeout") {
         await new Promise(() => {});
       }
-      if (mode === "close-fail") throw new Error("close rejected");
-      if (mode === "close-delay") await new Promise((resolve) => setTimeout(resolve, 150));
+      if (mode === "close-delay" || mode === "close-delay-fail") {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      if (mode === "close-fail" || mode === "partial-fail-close-fail" || mode === "close-delay-fail") {
+        throw new Error("close rejected");
+      }
       log(`close-complete:${ctx.params.sessionId}`);
       return {};
     })

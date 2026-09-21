@@ -42,6 +42,14 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
     prompt: (task) => `This is a noninteractive delegated task. Do not ask the user questions. Resolve minor ambiguity conservatively. If a material decision is unresolved, stop and report it.\n\n${task}`,
     sessionMetadata: () => ({}),
     persistNewSessionBeforeConfigure: true,
+    validateInitialized(initialized) {
+      if (!hasCloseCapability(initialized.agentCapabilities)) {
+        throw new RelayFailure(
+          "SESSION_CLOSE_UNSUPPORTED",
+          "DSH did not advertise session close capability",
+        );
+      }
+    },
     existingSession(initialized) {
       if (!hasResumeCapability(initialized.agentCapabilities)) {
         throw new RelayFailure("RESUME_UNSUPPORTED", "DSH did not advertise session resume capability");
@@ -70,12 +78,6 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
         : cancelledPermission();
     },
     async configureSession(ctx, sessionId, input, extras, signal) {
-      if (!hasCloseCapability(extras.agentCapabilities)) {
-        throw new RelayFailure(
-          "SESSION_CLOSE_UNSUPPORTED",
-          "DSH did not advertise session close capability",
-        );
-      }
       const requested = [
         ["model", input.model],
         ["reasoning_effort", input.reasoningEffort],
@@ -100,8 +102,7 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
         options = [...response.configOptions];
       }
     },
-    async completeSession(ctx, sessionId, signal) {
-      if (signal?.aborted) abortFailure(signal);
+    async finalizeSession(ctx, sessionId) {
       try {
         await withTimeout(
           ctx.request(acp.methods.agent.session.close, { sessionId }),
@@ -116,7 +117,6 @@ function dshAdapter(config: RelayConfig): ProviderAdapter<DshDelegateInput, DshR
           `DSH session close failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      if (signal?.aborted) abortFailure(signal);
     },
   };
 }

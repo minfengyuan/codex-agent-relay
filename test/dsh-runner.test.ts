@@ -183,14 +183,21 @@ describe("DshRunner", () => {
       cwd,
       sessionId: created.sessionId as string,
     })).rejects.toMatchObject({ code: "ACP_FAILURE" });
+    vi.stubEnv("FAKE_ACP_MODE", "resume-timeout");
+    await expect(new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), store).delegate({
+      task: "three",
+      cwd,
+      sessionId: created.sessionId as string,
+    })).rejects.toMatchObject({ code: "RESUME_TIMEOUT" });
     const events = await readFile(log, "utf8");
     expect(events).toContain("resume:fake-session-1");
     expect(events).not.toContain("load:");
     expect(events.match(/new:/g)).toHaveLength(1);
     expect(events.match(/close-complete:fake-session-1/g)).toHaveLength(2);
+    expect(events.match(/close-start:fake-session-1/g)).toHaveLength(2);
   });
 
-  it("requires session close capability before prompting", async () => {
+  it("requires session close capability before creating or resuming a session", async () => {
     vi.stubEnv("FAKE_ACP_MODE", "no-close");
     const state = await tempDir();
     const cwd = await tempDir();
@@ -201,10 +208,11 @@ describe("DshRunner", () => {
       cwd,
     })).rejects.toMatchObject({
       code: "SESSION_CLOSE_UNSUPPORTED",
-      partial: { provider: "dsh", sessionId: "fake-session-1" },
+      partial: { provider: "dsh", sessionId: null },
     });
     const events = await readFile(log, "utf8");
-    expect(events).toContain("new:");
+    expect(events).not.toContain("new:");
+    expect(events).not.toContain("resume:");
     expect(events).not.toContain("prompt:");
     expect(events).not.toContain("close-start:");
   });
@@ -236,7 +244,7 @@ describe("DshRunner", () => {
     const log = join(state, `${mode}.log`);
     vi.stubEnv("FAKE_ACP_LOG", log);
     const store = new SessionStore(state, "dsh");
-    await expect(new DshRunner(config(state, { phaseTimeoutMs: 300 }), store).delegate({ task: "one", cwd }))
+    await expect(new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), store).delegate({ task: "one", cwd }))
       .rejects.toMatchObject({
         code,
         partial: {
@@ -253,6 +261,84 @@ describe("DshRunner", () => {
     const lease = await store.acquire(cwd);
     await lease.markReaped("no-worker-created");
     await lease.release();
+  });
+
+  it.each([
+    ["new-fail", "ACP_FAILURE"],
+    ["new-timeout", "NEW_SESSION_TIMEOUT"],
+  ] as const)("does not close when %s never activates a session", async (mode, code) => {
+    vi.stubEnv("FAKE_ACP_MODE", mode);
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, `${mode}.log`);
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await expect(new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), new SessionStore(state, "dsh"))
+      .delegate({ task: mode, cwd })).rejects.toMatchObject({ code });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain("new:");
+    expect(events).not.toContain("close-start:");
+  });
+
+  it.each([
+    ["partial-fail-close-fail", "SESSION_CLOSE_FAILED"],
+    ["partial-fail-close-timeout", "SESSION_CLOSE_TIMEOUT"],
+  ] as const)("keeps prompt failure primary when abnormal close reports %s", async (mode, closeCode) => {
+    vi.stubEnv("FAKE_ACP_MODE", mode);
+    vi.stubEnv("FAKE_SESSION_ID", `${mode}-session`);
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, `${mode}.log`);
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await expect(new DshRunner(config(state, { phaseTimeoutMs: 1_500 }), new SessionStore(state, "dsh"))
+      .delegate({ task: mode, cwd })).rejects.toMatchObject({
+        code: "ACP_FAILURE",
+        message: expect.stringContaining(`session finalization error ${closeCode}`),
+        partial: { text: "partial text" },
+      });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain(`close-start:${mode}-session`);
+    expect(events).not.toContain(`cancel:${mode}-session`);
+  });
+
+  it("preserves a prompt/config failure when close hangs past the total timeout", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "config-fail-close-timeout");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "config-fail-close-timeout.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    await expect(new DshRunner(config(state, {
+      phaseTimeoutMs: 5_000,
+      totalTimeoutMs: 3_000,
+    }), new SessionStore(state, "dsh")).delegate({
+      task: "configure",
+      cwd,
+      model: "dsh/gpt",
+    })).rejects.toMatchObject({
+      code: "ACP_FAILURE",
+      message: expect.stringContaining("session finalization error SESSION_CLOSE_TIMEOUT"),
+    });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain("set-config:model:dsh/gpt");
+    expect(events).toContain("close-start:fake-session-1");
+    expect(events).not.toContain("cancel:fake-session-1");
+  });
+
+  it("keeps caller cancellation primary when abort races with normal close failure", async () => {
+    vi.stubEnv("FAKE_ACP_MODE", "close-delay-fail");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "close-abort.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const controller = new AbortController();
+    const pending = new DshRunner(config(state), new SessionStore(state, "dsh"))
+      .delegate({ task: "one", cwd }, controller.signal);
+    await waitForLog(log, "close-start:fake-session-1");
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({
+      code: "CANCELLED",
+      message: expect.stringContaining("session finalization error SESSION_CLOSE_FAILED"),
+    });
+    expect((await readFile(log, "utf8")).match(/close-start:fake-session-1/g)).toHaveLength(1);
   });
 
   it("fails RESUME_UNSUPPORTED without load or replacement session", async () => {
@@ -331,6 +417,10 @@ describe("DshRunner", () => {
     const { cleanupAllChildren } = await import("../src/runner.js");
     await cleanupAllChildren();
     await expect(active).rejects.toMatchObject({ code: "CANCELLED" });
+    const events = await readFile(log, "utf8");
+    expect(events.indexOf("cancel:lock-session")).toBeLessThan(events.indexOf("close-start:lock-session"));
+    expect(events).toContain("close-complete:lock-session");
+    expect(events.match(/close-start:lock-session/g)).toHaveLength(1);
   });
 
   it("configures model then reasoning_effort, including grouped values and post-model option refresh", async () => {
@@ -399,6 +489,7 @@ describe("DshRunner", () => {
     const events = await readFile(log, "utf8");
     expect(events).toContain("new:");
     expect(events).not.toContain("prompt:");
+    expect(events).toContain(`close-complete:${sessionId}`);
 
     if (sessionId === "invalid-session") {
       vi.stubEnv("FAKE_ACP_MODE", "");
@@ -433,6 +524,7 @@ describe("DshRunner", () => {
     expect(events).toContain("new:");
     expect(events).not.toContain("set-config:");
     expect(events).not.toContain("prompt:");
+    expect(events).toContain("close-complete:conflicting-session");
   });
 
   it("does not send the prompt after abort during the reasoning_effort request", async () => {
@@ -461,6 +553,8 @@ describe("DshRunner", () => {
     expect(events).toContain("set-config:model:dsh/gpt");
     expect(events).toContain("set-config:reasoning_effort:high");
     expect(events).not.toContain("prompt:");
+    expect(events.indexOf("cancel:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
+    expect(events).toContain("close-complete:fake-session-1");
     const lease = await store.acquire(cwd);
     await lease.markReaped("no-worker-created");
     await lease.release();
@@ -489,6 +583,8 @@ describe("DshRunner", () => {
     );
     expect(events).not.toContain("allow-once-actual");
     expect(events).not.toContain("always-actual");
+    expect(events.indexOf("cancel:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
+    expect(events).toContain("close-complete:fake-session-1");
   });
 
   it("cancels when reject_once is missing", async () => {
@@ -552,6 +648,8 @@ describe("DshRunner", () => {
     });
     const events = await readFile(log, "utf8");
     expect(events).toContain("cancel:fake-session-1");
+    expect(events.indexOf("cancel:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
+    expect(events).toContain("close-complete:fake-session-1");
     expect(events).toContain('permission-response:{"outcome":{"outcome":"cancelled"}}');
     expect(events).not.toContain('"outcome":"selected"');
     const lease = await store.acquire(cwd);
@@ -599,7 +697,9 @@ describe("DshRunner", () => {
     vi.stubEnv("FAKE_ACP_MODE", "hang");
     await expect(new DshRunner(config(state, { totalTimeoutMs: 1_500 }), new SessionStore(state, "dsh"))
       .delegate({ task: "hang", cwd })).rejects.toMatchObject({ code: "TIMEOUT" });
-    expect(await readFile(hangLog, "utf8")).toContain("cancel:fake-session-1");
+    const hangEvents = await readFile(hangLog, "utf8");
+    expect(hangEvents.indexOf("cancel:fake-session-1")).toBeLessThan(hangEvents.indexOf("close-start:fake-session-1"));
+    expect(hangEvents).toContain("close-complete:fake-session-1");
     const lease = await new SessionStore(state, "dsh").acquire(cwd);
     await lease.markReaped("no-worker-created");
     await lease.release();

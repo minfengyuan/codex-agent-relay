@@ -63,12 +63,12 @@ A public tool-contract change normally begins here and must stay synchronized wi
 5. Ask the adapter how to spawn the provider CLI and construct the child environment.
 6. Connect ACP over NDJSON on the child's stdin/stdout.
 7. Initialize and, when required, authenticate.
-8. Create, load, or resume a session.
+8. Let the adapter validate initialized capabilities, then create, load, or resume a session.
 9. For adapters that require recoverable configuration failures, persist a newly created session immediately.
 10. Let the adapter apply provider-specific session configuration.
 11. Persist any remaining newly created session before prompting.
 12. Send one prompt and collect bounded text/provider summaries.
-13. Run the adapter's optional successful-session completion hook.
+13. Run the adapter's optional session-finalization hook.
 14. Touch resumed session metadata after successful completion.
 15. On cancellation, timeout, permission failure, or other error, preserve useful partial output.
 16. Terminate the worker process tree and release the workspace lock only after cleanup is confirmed.
@@ -206,9 +206,9 @@ There are three cancellation sources:
 - Total task timeout.
 - Relay shutdown.
 
-The runner first attempts the ACP session-cancel notification when possible, waits within the cancellation grace period, then terminates the process tree. Cancellation and termination are single-flight operations so concurrent shutdown paths do not repeat notifications or signals.
+The runner tracks a session as active only after `session/new`, `session/resume`, or `session/load` returns a valid result. Cancellation, timeout, and permission failure then run ACP `session/cancel`, best-effort adapter finalization, and process-tree termination in that order. Providers without a finalization hook retain the legacy behavior of waiting for process exit within the remaining cancellation grace period; providers with a finalizer proceed directly to finalization so DSH can close while the ACP connection is still usable. Configuration, prompting, persistence, and other failures skip cancel but still attempt finalization before termination. No finalization is attempted when session activation failed or timed out. Cancel notification, finalization, and termination are independently single-flight so caller cancellation, task failure, and relay shutdown cannot duplicate protocol requests or signals.
 
-On a successful DSH prompt, the adapter waits for `session/close` before the result can succeed. The close response is the provider-level confirmation that session updates, descendants, and persistence have been finalized. Process-tree cleanup still runs afterward and remains authoritative for worker cleanup. The runner starts that cleanup while the ACP connection still owns the worker root so Windows can retain its existing descendant-cleanup proof; cancellation and error paths continue to use the normal cancel/termination flow.
+DSH validates the advertised `session/close` capability immediately after initialize, before creating or resuming a session. On a successful prompt, the adapter waits for `session/close` before the result can succeed. The close response is the provider-level confirmation that session updates, descendants, and persistence have been finalized. Process-tree cleanup still runs afterward and remains authoritative for worker cleanup. The runner starts that cleanup while the ACP connection still owns the worker root so Windows can retain its existing descendant-cleanup proof. On an abnormal path, close failure is bounded secondary diagnostic data and never replaces the original task error; unconfirmed process cleanup and lease errors retain their higher precedence.
 
 On POSIX systems the provider is spawned in its own process group. Cleanup sends group-level `SIGTERM`, escalates to `SIGKILL`, and confirms both group disappearance and direct-child exit; processes that escape the original group are outside this guarantee. After those signals, confirmation retries transient unknown process-group probes (`EPERM` and other non-`ESRCH` errors) only inside the existing TERM/KILL confirmation deadlines, then fails closed if the last probe is still unknown. `EPERM` and direct-child exit alone never count as group disappearance. Windows invokes the absolute `%SystemRoot%\System32\taskkill.exe` path with `/T /F`, without a shell, and confirms both a successful helper exit and direct-child exit. This is confirmation of the `taskkill` operation, not Job Object or crash-proof containment. A Windows root that exits before tree termination is conservatively unconfirmed because the relay can no longer establish descendant cleanup.
 

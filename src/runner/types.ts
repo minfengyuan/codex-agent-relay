@@ -50,6 +50,7 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
   persistNewSessionBeforeConfigure?: boolean;
   spawnEnv?(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   existingSession?(initialized: acp.InitializeResponse, input: I): ExistingSessionAction;
+  validateInitialized?(initialized: acp.InitializeResponse): void;
   validateInput?(input: I): void;
   createSummarizer(limitBytes: number): ProviderSummarizer<R>;
   handlePermission(params: acp.RequestPermissionRequest, rt: PermissionRuntime<R>): acp.RequestPermissionResponse;
@@ -61,9 +62,8 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
     extras: SessionExtras,
     signal?: AbortSignal,
   ): Promise<void>;
-  completeSession?(
+  finalizeSession?(
     ctx: acp.ClientContext,
     sessionId: string,
-    signal?: AbortSignal,
   ): Promise<void>;
 };

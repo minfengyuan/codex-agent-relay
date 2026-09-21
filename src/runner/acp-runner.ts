@@ -88,15 +88,25 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
     let permissionRequested = false;
     let permissionFailure: RelayFailure | undefined;
     let promptStarted = false;
+    let sessionActive = false;
     let child: ChildProcessWithoutNullStreams | undefined;
     let processTree: ProcessTreeController | undefined;
+    let clientContext: acp.ClientContext | undefined;
     const worker: { state: "not-attempted" | "pending" | "created" | "failed" } = { state: "not-attempted" };
     let active: ActiveChild | undefined;
     let operation: Promise<string> | undefined;
+    let operationFailure: unknown;
     let completedResult: R | undefined;
     let pendingError: RelayFailure | undefined;
     let cleanupReport: TerminationReport | undefined;
-    let eagerCleanup: Promise<TerminationReport> | undefined;
+    let cancelNotification: Promise<void> | undefined;
+    let cancelDeadline: number | undefined;
+    let cancelGraceWait: Promise<void> | undefined;
+    let sessionFinalization: Promise<void> | undefined;
+    let processTermination: Promise<TerminationReport> | undefined;
+    let abnormalCleanup: Promise<TerminationReport> | undefined;
+    let cancelBeforeCleanup = false;
+    let abnormalFinalizationFailure: RelayFailure | undefined;
     let unexpectedCleanupError: unknown;
     let hasUnexpectedCleanupError = false;
     const leaseErrors: RelayFailure[] = [];
@@ -108,12 +118,70 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       ...summarizer.result(),
     });
     const totalAbort = new AbortController();
+    const notifySessionCancel = (): Promise<void> => {
+      cancelNotification ??= (async () => {
+        if (!clientContext || !sessionActive || !sessionId) return;
+        cancelDeadline ??= Date.now() + this.config.cancelGraceMs;
+        await settleWithin(
+          clientContext.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => undefined),
+          Math.max(1, cancelDeadline - Date.now()),
+        );
+      })();
+      return cancelNotification;
+    };
+    const waitForLegacyCancellationGrace = (): Promise<void> => {
+      cancelGraceWait ??= (async () => {
+        if (!child || cancelDeadline === undefined) return;
+        const remaining = Math.max(0, cancelDeadline - Date.now());
+        if (remaining > 0) await waitForExit(child, remaining);
+      })();
+      return cancelGraceWait;
+    };
+    const finalizeActiveSession = (): Promise<void> => {
+      sessionFinalization ??= (!clientContext || !sessionActive || !sessionId || !this.adapter.finalizeSession)
+        ? Promise.resolve()
+        : this.adapter.finalizeSession(clientContext, sessionId);
+      return sessionFinalization;
+    };
+    const terminateProcess = (): Promise<TerminationReport> => {
+      if (!processTermination) {
+        const attempt = processTree?.terminate() ?? Promise.resolve({
+          forced: false,
+          confirmed: false,
+          reason: "The worker process tree controller is unavailable",
+        });
+        processTermination = attempt.catch((error: unknown) => {
+          processTermination = undefined;
+          throw error;
+        });
+      }
+      return processTermination;
+    };
+    const cleanupAbnormalSession = (): Promise<TerminationReport> => {
+      abnormalCleanup ??= (async () => {
+        // Let a simultaneous shutdown/caller abort publish its cancellation intent
+        // before selecting the abnormal cleanup sequence.
+        await Promise.resolve();
+        if (cancelBeforeCleanup) {
+          await notifySessionCancel();
+          if (!this.adapter.finalizeSession) await waitForLegacyCancellationGrace();
+        }
+        try {
+          await finalizeActiveSession();
+        } catch (error) {
+          abnormalFinalizationFailure = asFinalizationFailure(error, this.adapter.displayName);
+        }
+        return terminateProcess();
+      })();
+      return abnormalCleanup;
+    };
     let resolveSettled: (report: CleanupReport) => void = () => {};
     const taskEntry: ActiveTask = {
       cancel: async () => {
+        cancelBeforeCleanup = true;
         totalAbort.abort(new RelayFailure("CANCELLED", "Relay is shutting down"));
         if (active) await active.cancel();
-        else if (processTree) await processTree.terminate();
+        else if (processTree) await terminateProcess();
       },
       settled: new Promise<CleanupReport>((resolve) => { resolveSettled = resolve; }),
       resolveSettled: (report) => resolveSettled(report),
@@ -185,26 +253,9 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
       }
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
 
-      let clientContext: acp.ClientContext | undefined;
-      let cancellation: Promise<TerminationReport> | undefined;
       const cancelChild = (): Promise<TerminationReport> => {
-        cancellation ??= (async () => {
-          if (clientContext && sessionId) {
-            const deadline = Date.now() + this.config.cancelGraceMs;
-            await settleWithin(
-              clientContext.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => undefined),
-              Math.max(1, deadline - Date.now()),
-            );
-            const remaining = Math.max(0, deadline - Date.now());
-            if (remaining > 0) await waitForExit(child as ChildProcessWithoutNullStreams, remaining);
-          }
-          return processTree?.terminate() ?? {
-            forced: false,
-            confirmed: false,
-            reason: "The worker process tree controller is unavailable",
-          };
-        })();
-        return cancellation;
+        cancelBeforeCleanup = true;
+        return cleanupAbnormalSession();
       };
       active = { cancel: cancelChild };
 
@@ -254,102 +305,120 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
 
       operation = app.connectWith(stream, async (ctx) => {
         clientContext = ctx;
-        if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-        const initialized = await withTimeout(ctx.request(acp.methods.agent.initialize, {
-          protocolVersion: 1,
-          clientCapabilities: this.adapter.capabilities,
-          clientInfo: { name: "codex-agent-relay", version: "0.1.0" },
-        }), this.config.phaseTimeoutMs, "INITIALIZE_TIMEOUT", `${this.adapter.displayName} initialize timed out`);
-        if (initialized.protocolVersion !== 1) {
-          throw new RelayFailure("PROTOCOL_MISMATCH", `${this.adapter.displayName} returned ACP protocol ${initialized.protocolVersion}`);
-        }
-        const authMethod = this.adapter.authenticate(initialized);
-        if (authMethod) {
+        try {
           if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-          await withTimeout(ctx.request(
-            acp.methods.agent.authenticate,
-            this.adapter.authenticateParams?.(authMethod) ?? { methodId: authMethod },
-          ), this.config.phaseTimeoutMs, "AUTH_TIMEOUT", `${this.adapter.displayName} authentication timed out`);
-        }
+          const initialized = await withTimeout(ctx.request(acp.methods.agent.initialize, {
+            protocolVersion: 1,
+            clientCapabilities: this.adapter.capabilities,
+            clientInfo: { name: "codex-agent-relay", version: "0.1.0" },
+          }), this.config.phaseTimeoutMs, "INITIALIZE_TIMEOUT", `${this.adapter.displayName} initialize timed out`);
+          if (initialized.protocolVersion !== 1) {
+            throw new RelayFailure("PROTOCOL_MISMATCH", `${this.adapter.displayName} returned ACP protocol ${initialized.protocolVersion}`);
+          }
+          this.adapter.validateInitialized?.(initialized);
+          const authMethod = this.adapter.authenticate(initialized);
+          if (authMethod) {
+            if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
+            await withTimeout(ctx.request(
+              acp.methods.agent.authenticate,
+              this.adapter.authenticateParams?.(authMethod) ?? { methodId: authMethod },
+            ), this.config.phaseTimeoutMs, "AUTH_TIMEOUT", `${this.adapter.displayName} authentication timed out`);
+          }
 
-        let sessionModes: acp.SessionModeState | null | undefined;
-        let configOptions: readonly acp.SessionConfigOption[] | null | undefined;
-        if (record) {
-          if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-          const action = this.adapter.existingSession?.(initialized, input) ?? "load";
-          if (action === "resume") {
-            const resumed = await withTimeout(ctx.request(acp.methods.agent.session.resume, {
-              sessionId: record.sessionId,
-              cwd,
-              mcpServers: [],
-            }), this.config.phaseTimeoutMs, "RESUME_TIMEOUT", `${this.adapter.displayName} session resume timed out`);
-            sessionModes = resumed.modes;
-            configOptions = resumed.configOptions;
-          } else {
-            if (!this.adapter.existingSession && !hasLoadCapability(initialized.agentCapabilities)) {
-              throw new RelayFailure("LOAD_UNSUPPORTED", `${this.adapter.displayName} did not advertise loadSession capability`);
+          let sessionModes: acp.SessionModeState | null | undefined;
+          let configOptions: readonly acp.SessionConfigOption[] | null | undefined;
+          if (record) {
+            if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
+            const action = this.adapter.existingSession?.(initialized, input) ?? "load";
+            if (action === "resume") {
+              const resumed = await withTimeout(ctx.request(acp.methods.agent.session.resume, {
+                sessionId: record.sessionId,
+                cwd,
+                mcpServers: [],
+              }), this.config.phaseTimeoutMs, "RESUME_TIMEOUT", `${this.adapter.displayName} session resume timed out`);
+              sessionActive = true;
+              sessionModes = resumed.modes;
+              configOptions = resumed.configOptions;
+            } else {
+              if (!this.adapter.existingSession && !hasLoadCapability(initialized.agentCapabilities)) {
+                throw new RelayFailure("LOAD_UNSUPPORTED", `${this.adapter.displayName} did not advertise loadSession capability`);
+              }
+              const loaded = await withTimeout(ctx.request(acp.methods.agent.session.load, {
+                sessionId: record.sessionId,
+                cwd,
+                mcpServers: [],
+              }), this.config.phaseTimeoutMs, "LOAD_TIMEOUT", `${this.adapter.displayName} session load timed out`);
+              sessionActive = true;
+              sessionModes = loaded.modes;
+              configOptions = loaded.configOptions;
             }
-            const loaded = await withTimeout(ctx.request(acp.methods.agent.session.load, {
-              sessionId: record.sessionId,
+          } else {
+            if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
+            const created = await withTimeout(ctx.request(acp.methods.agent.session.new, {
               cwd,
               mcpServers: [],
-            }), this.config.phaseTimeoutMs, "LOAD_TIMEOUT", `${this.adapter.displayName} session load timed out`);
-            sessionModes = loaded.modes;
-            configOptions = loaded.configOptions;
+            }), this.config.phaseTimeoutMs, "NEW_SESSION_TIMEOUT", `${this.adapter.displayName} session creation timed out`);
+            sessionId = created.sessionId;
+            if (!sessionId) throw new RelayFailure("INVALID_SESSION", `${this.adapter.displayName} returned an empty sessionId`);
+            sessionActive = true;
+            sessionModes = created.modes;
+            configOptions = created.configOptions;
           }
-        } else {
-          if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-          const created = await withTimeout(ctx.request(acp.methods.agent.session.new, {
-            cwd,
-            mcpServers: [],
-          }), this.config.phaseTimeoutMs, "NEW_SESSION_TIMEOUT", `${this.adapter.displayName} session creation timed out`);
-          sessionId = created.sessionId;
-          if (!sessionId) throw new RelayFailure("INVALID_SESSION", `${this.adapter.displayName} returned an empty sessionId`);
-          sessionModes = created.modes;
-          configOptions = created.configOptions;
-        }
-        if (!record && this.adapter.persistNewSessionBeforeConfigure) {
-          await this.store.writeNew(sessionId as string, cwd, metadata);
-          resumableSessionId = sessionId;
-        }
-        if (this.adapter.configureSession) {
-          await this.adapter.configureSession(ctx, sessionId as string, input, {
-            agentCapabilities: initialized.agentCapabilities,
-            configOptions,
-            modes: sessionModes,
-            metadata,
-          }, totalAbort.signal);
-        }
-        if (!record && !this.adapter.persistNewSessionBeforeConfigure) {
-          await this.store.writeNew(sessionId as string, cwd, metadata);
-          resumableSessionId = sessionId;
-        }
+          if (!record && this.adapter.persistNewSessionBeforeConfigure) {
+            await this.store.writeNew(sessionId as string, cwd, metadata);
+            resumableSessionId = sessionId;
+          }
+          if (this.adapter.configureSession) {
+            await this.adapter.configureSession(ctx, sessionId as string, input, {
+              agentCapabilities: initialized.agentCapabilities,
+              configOptions,
+              modes: sessionModes,
+              metadata,
+            }, totalAbort.signal);
+          }
+          if (!record && !this.adapter.persistNewSessionBeforeConfigure) {
+            await this.store.writeNew(sessionId as string, cwd, metadata);
+            resumableSessionId = sessionId;
+          }
 
-        promptStarted = true;
-        if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
-        const response = await ctx.request(acp.methods.agent.session.prompt, {
-          sessionId: sessionId as string,
-          prompt: [{ type: "text", text: this.adapter.prompt(input.task) }],
-        });
-        if (permissionRequested) {
-          throw permissionFailure ?? new RelayFailure(
-            "UNEXPECTED_PERMISSION",
-            "Grok requested permission despite --always-approve",
-            partial(),
-          );
-        }
-        if (this.adapter.completeSession) {
-          try {
-            await this.adapter.completeSession(ctx, sessionId as string, totalAbort.signal);
-          } finally {
-            // Start tree cleanup while the ACP connection still keeps the worker root alive.
-            // This is required on Windows, where a root that exits before taskkill starts
-            // cannot provide proof that its descendants were also removed.
-            eagerCleanup ??= processTree?.terminate();
+          promptStarted = true;
+          if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
+          const response = await ctx.request(acp.methods.agent.session.prompt, {
+            sessionId: sessionId as string,
+            prompt: [{ type: "text", text: this.adapter.prompt(input.task) }],
+          });
+          if (permissionRequested) {
+            throw permissionFailure ?? new RelayFailure(
+              "UNEXPECTED_PERMISSION",
+              "Grok requested permission despite --always-approve",
+              partial(),
+            );
           }
+          if (this.adapter.finalizeSession) {
+            try {
+              await finalizeActiveSession();
+            } finally {
+              // Start tree cleanup while the ACP connection still keeps the worker root alive.
+              // This is required on Windows, where a root that exits before taskkill starts
+              // cannot provide proof that its descendants were also removed.
+              void terminateProcess();
+            }
+          }
+          if (record) await this.store.touch(record);
+          return response.stopReason;
+        } catch (error) {
+          const reason = totalAbort.signal.aborted && totalAbort.signal.reason instanceof RelayFailure
+            ? totalAbort.signal.reason
+            : error;
+          operationFailure ??= reason;
+          cancelBeforeCleanup ||= reason instanceof RelayFailure && (
+            reason.code === "CANCELLED"
+            || reason.code === "TIMEOUT"
+            || reason.code === "PERMISSION_REQUIRED"
+          );
+          await cleanupAbnormalSession().catch(() => undefined);
+          throw error;
         }
-        if (record) await this.store.touch(record);
-        return response.stopReason;
       });
 
       if (totalAbort.signal.aborted) abortFailure(totalAbort.signal);
@@ -368,20 +437,29 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         ...summarizer.result(),
       } as R;
     } catch (error) {
-      if ((totalAbort.signal.aborted || permissionRequested) && active) {
-        await active.cancel().catch(() => undefined);
-        if (operation) await settleWithin(operation.catch(() => undefined), this.config.killConfirmMs);
-      }
-      const effectiveError = totalAbort.signal.aborted && totalAbort.signal.reason instanceof RelayFailure
-        ? totalAbort.signal.reason
-        : error;
+      const effectiveError = operationFailure
+        ?? (totalAbort.signal.aborted && totalAbort.signal.reason instanceof RelayFailure
+          ? totalAbort.signal.reason
+          : error);
       const failure = effectiveError instanceof RelayFailure
         ? effectiveError
         : new RelayFailure(
           "ACP_FAILURE",
           `${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}${stderr ? `; ${this.adapter.displayName} stderr: ${stderr}` : ""}`,
         );
-      pendingError = new RelayFailure(failure.code, boundedString(failure.message,
+      cancelBeforeCleanup ||= failure.code === "CANCELLED"
+        || failure.code === "TIMEOUT"
+        || failure.code === "PERMISSION_REQUIRED";
+      if (active) {
+        await cleanupAbnormalSession().catch(() => undefined);
+        if (operation) await settleWithin(operation.catch(() => undefined), this.config.killConfirmMs);
+      }
+      pendingError = new RelayFailure(failure.code, boundedString(
+        `${failure.message}${finalizationDiagnostic(
+          abnormalFinalizationFailure && failure !== abnormalFinalizationFailure
+            ? abnormalFinalizationFailure
+            : undefined,
+        )}`,
         Math.min(this.config.stderrLimitBytes, 8 * 1_024)), {
         ...partial(),
         ...(failure.partial ?? {}),
@@ -398,7 +476,7 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
         if (worker.state === "created" || worker.state === "pending") {
           try {
             cleanupReport = processTree
-              ? await (eagerCleanup ?? processTree.terminate())
+              ? await terminateProcess()
               : { forced: false, confirmed: false, reason: "The worker process tree controller is unavailable" };
           } catch (error) {
             cleanupReport = { forced: false, confirmed: false, reason: String(error) };
@@ -504,6 +582,20 @@ async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promi
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function asFinalizationFailure(error: unknown, displayName: string): RelayFailure {
+  if (error instanceof RelayFailure) return error;
+  return new RelayFailure(
+    "SESSION_CLOSE_FAILED",
+    `${displayName} session finalization failed: ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
+
+function finalizationDiagnostic(failure: RelayFailure | undefined): string {
+  return failure
+    ? `; session finalization error ${failure.code}: ${failure.message}`
+    : "";
 }
 
 function asLeaseFailure(error: unknown, context: string): RelayFailure {

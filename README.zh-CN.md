@@ -114,7 +114,7 @@ DSH 即 DeepSeek Harness。委派前请先安装并配置好 `dsh` CLI。生产�
 
 同时提供 `model` 和 `reasoningEffort` 时，relay 先设置 `model`，再设置 `reasoning_effort`，取值必须是当前会话声明的选项。省略任一字段则保留 CLI 现有配置。未声明或不合法的值会失败关闭（`INVALID_CONFIG` / `CONFIG_UNSUPPORTED`）。新建 DSH 会话时，relay 会在配置前保存会话绑定；因此配置失败的 partial result 会包含可恢复的 `sessionId`，可在相同 `cwd` 下重试。relay 记录未经确认时不会对外暴露会话 ID。
 
-成功结果包含 `provider: "dsh"`、有界 `text`，以及可选的 `toolCalls` / `usage`；摘要超限时带 `summariesTruncated`。在报告成功前，relay 要求 DSH 声明 `session/close` 能力并等待关闭请求完成，以确认会话更新和持久化已经收尾。缺少能力、关闭超时或关闭失败分别返回 `SESSION_CLOSE_UNSUPPORTED`、`SESSION_CLOSE_TIMEOUT` 或 `SESSION_CLOSE_FAILED`；已经产生的输出保留在 partial result 中。权限请求会被拒绝（有 `reject_once` 时选择拒绝）并以 `PERMISSION_REQUIRED` 中止。
+成功结果包含 `provider: "dsh"`、有界 `text`，以及可选的 `toolCalls` / `usage`；摘要超限时带 `summariesTruncated`。新建或恢复会话前，relay 要求 DSH 声明 `session/close` 能力；报告成功前还会等待关闭请求完成，以确认会话更新和持久化已经收尾。缺少能力、关闭超时或关闭失败分别返回 `SESSION_CLOSE_UNSUPPORTED`、`SESSION_CLOSE_TIMEOUT` 或 `SESSION_CLOSE_FAILED`；已经产生的输出保留在 partial result 中。活动会话异常失败时，relay 会在清理进程树前尝试关闭会话；取消、超时和权限失败会先发送 `session/cancel`。异常路径的关闭失败只作为有界诊断附加，不会覆盖原始错误。权限请求会被拒绝（有 `reject_once` 时选择拒绝）并以 `PERMISSION_REQUIRED` 中止。
 
 真实 DSH smoke test 为 opt-in（`pnpm test:real:dsh` 或 `RUN_DSH_REAL_TESTS=1`）。可选环境变量 `DSH_TEST_MODEL` 和 `DSH_TEST_REASONING_EFFORT` 用于覆盖 resume 时的配置路径。
 
@@ -140,7 +140,7 @@ Codex 决定集成、修正或继续追问
 - relay 不负责创建 worktree，也不会自动接受 Agent 产生的修改。
 - 文件系统、网络访问和权限行为最终取决于所选 Agent 及其本地配置。对 DSH，relay 会拒绝自动 ACP 批准（有 `reject_once` 时选择拒绝），并返回 `PERMISSION_REQUIRED`；这不是硬性的文件系统或网络隔离。已保存的 DSH 会话和部署配置仍然生效。
 - DSH 仅在 CLI 声明 resume 能力时续接已有会话。relay 不会 load，也不会在失败时新建会话；缺少 resume 能力时返回 `RESUME_UNSUPPORTED`。
-- DSH 只有在 `session/close` 获得确认后才会成功。之后 relay 仍会执行并验证常规进程树清理；ACP 会话关闭不会被当作进程清理证明。
+- DSH 只有在 `session/close` 获得确认后才会成功。活动会话失败时也会在进程清理前尽力关闭；取消、超时和权限失败会先发送 `session/cancel`。之后 relay 仍会执行并验证进程树清理，且异常关闭失败不会覆盖原始任务错误。
 - relay 会按进程树终止委派 worker。若无法确认清理完成，将返回 `PROCESS_CLEANUP_FAILED`，并在可能时把 workspace lease 标记为 orphaned 后继续保锁。owner 存活时后续调用返回 `WORKSPACE_BUSY`；owner 死亡后仍无法确认 worker 清理时返回 `WORKSPACE_ORPHANED`。
 - `SIGINT`、`SIGTERM`、`SIGHUP` 和 stdin EOF 会启动同一个关闭操作。relay 会立即停止接纳新委派，以 5 秒超时关闭 MCP transport，并且不设置全局期限，等待所有已登记任务完成进程树清理和 workspace lease 收尾。重复关闭事件不会绕过清理，也不会重复取消任务。
 - 信号或 EOF 的正常关闭以状态码 `0` 退出。transport 关闭、进程清理或 lease 收尾失败会写入 stderr，并以状态码 `1` 退出；无法确认退出的 worker 会继续保锁。由于 runner 清理没有强制期限，永久阻塞的文件系统操作也可能使关闭一直等待。
