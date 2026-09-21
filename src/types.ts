@@ -25,8 +25,11 @@ export type RelayErrorCode =
   | "NEW_SESSION_TIMEOUT"
   | "MODE_TIMEOUT"
   | "CONFIG_TIMEOUT"
+  | "SESSION_CLOSE_TIMEOUT"
   | "PROTOCOL_MISMATCH"
   | "LOAD_UNSUPPORTED"
+  | "RESUME_UNSUPPORTED"
+  | "SESSION_CLOSE_UNSUPPORTED"
   | "INVALID_SESSION"
   | "MODE_UNAVAILABLE"
   | "AUTH_UNAVAILABLE"
@@ -34,6 +37,7 @@ export type RelayErrorCode =
   | "SESSION_OPTION_CONFLICT"
   | "CONFIG_UNSUPPORTED"
   | "INVALID_CONFIG"
+  | "SESSION_CLOSE_FAILED"
   | "PERMISSION_REQUIRED"
   | "UNEXPECTED_PERMISSION"
   | "ACP_FAILURE";
@@ -73,12 +77,20 @@ export type OpenCodeRelayResult = RelayResultBase & {
   summariesTruncated?: boolean;
 };
 
-export type RelayResult = GrokRelayResult | CursorRelayResult | OpenCodeRelayResult;
+export type DshRelayResult = RelayResultBase & {
+  provider: "dsh";
+  toolCalls?: ToolCallSummary[];
+  usage?: UsageSummary;
+  summariesTruncated?: boolean;
+};
+
+export type RelayResult = GrokRelayResult | CursorRelayResult | OpenCodeRelayResult | DshRelayResult;
 
 export type RelayResultPartial =
   | Partial<GrokRelayResult>
   | Partial<CursorRelayResult>
-  | Partial<OpenCodeRelayResult>;
+  | Partial<OpenCodeRelayResult>
+  | Partial<DshRelayResult>;
 
 type GrokForbiddenExtras =
   | "provider"
@@ -110,6 +122,11 @@ export type OpenCodeDelegateInput = DelegateInput & {
   model?: string;
   effort?: string;
   agent?: string;
+};
+
+export type DshDelegateInput = DelegateInput & {
+  model?: string;
+  reasoningEffort?: string;
 };
 
 export type ToolCallSummary = {

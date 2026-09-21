@@ -2,12 +2,54 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { configSelectValues } from "../src/runner/helpers.js";
+import { OpenCodeSummaries, StandardSummaries } from "../src/runner/summaries.js";
+import type * as acp from "@agentclientprotocol/sdk";
 
 describe("loadConfig", () => {
   it("defaults to opencode and trims an explicit command", () => {
     expect(loadConfig({}).opencodeCommand).toBe("opencode");
     expect(loadConfig({ CODEX_AGENT_RELAY_OPENCODE_COMMAND: "  /bin/oc  " }).opencodeCommand).toBe("/bin/oc");
     expect(loadConfig({ CODEX_AGENT_RELAY_OPENCODE_COMMAND: "   " }).opencodeCommand).toBe("opencode");
+  });
+
+  it("defaults to dsh and trims an explicit command without an args env", () => {
+    expect(loadConfig({}).dshCommand).toBe("dsh");
+    expect(loadConfig({}).dshCommandArgs).toBeUndefined();
+    expect(loadConfig({}).dshCommand).toBe("dsh");
+    expect(loadConfig({ CODEX_AGENT_RELAY_DSH_COMMAND: "  /bin/dsh  " }).dshCommand).toBe("/bin/dsh");
+    expect(loadConfig({ CODEX_AGENT_RELAY_DSH_COMMAND: "   " }).dshCommand).toBe("dsh");
+  });
+
+  it("extracts flat and grouped OpenCode-style select values", () => {
+    const flat = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: "a",
+      options: [{ value: "a", name: "A" }, { value: "b", name: "B" }],
+    } as acp.SessionConfigOption;
+    const grouped = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: "a",
+      options: [{ group: "g", name: "G", options: [{ value: "a", name: "A" }, { value: "b", name: "B" }] }],
+    } as acp.SessionConfigOption;
+    expect(configSelectValues(flat)).toEqual(["a", "b"]);
+    expect(configSelectValues(grouped)).toEqual(["a", "b"]);
+    expect(configSelectValues({ id: "x", name: "X", type: "boolean", currentValue: true } as acp.SessionConfigOption)).toEqual([]);
+  });
+
+  it("keeps OpenCodeSummaries constructor compatible and requires an explicit DSH provider", () => {
+    const open = new OpenCodeSummaries(1024);
+    open.onToolCall({ toolCallId: "t1", title: "Tool" });
+    expect(open.result().provider).toBe("opencode");
+    const dsh = new StandardSummaries(1024, "dsh");
+    dsh.onToolCall({ toolCallId: "t1", title: "Tool" });
+    expect(dsh.result().provider).toBe("dsh");
   });
 
   it("reads new config keys and ignores old GROK_RELAY_* keys", () => {

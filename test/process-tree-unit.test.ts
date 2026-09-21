@@ -41,6 +41,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   spawnMock.mockReset();
+  vi.useRealTimers();
 });
 
 describe("process-tree system-call failures", () => {
@@ -108,7 +109,11 @@ describe("process-tree system-call failures", () => {
     platform("linux");
     const unknown = fakeChild();
     vi.spyOn(process, "kill").mockImplementation(() => { const error = Object.assign(new Error(), { code: "EPERM" }); throw error; });
-    await expect((await controller(unknown)).terminate()).resolves.toMatchObject({ confirmed: false });
+    await expect((await controller(unknown)).terminate()).resolves.toMatchObject({
+      forced: false,
+      confirmed: false,
+      reason: "Cannot determine whether the worker process group is alive",
+    });
     vi.restoreAllMocks();
     const child = fakeChild();
     vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
@@ -118,6 +123,84 @@ describe("process-tree system-call failures", () => {
     });
     await expect((await controller(child, { termGraceMs: 1, killConfirmMs: 10 })).terminate())
       .resolves.toEqual({ forced: true, confirmed: true });
+  });
+
+  it("retries a transient EPERM after SIGTERM and confirms only when the group is gone and the child exited", async () => {
+    platform("linux");
+    vi.useFakeTimers();
+    const child = fakeChild();
+    let signaledTerm = false;
+    let postTermProbes = 0;
+    vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+      if (signal === "SIGKILL") throw new Error("must not escalate after graceful confirmation");
+      if (signal === "SIGTERM") {
+        signaledTerm = true;
+        return true;
+      }
+      if (signal === 0) {
+        if (!signaledTerm) return true;
+        postTermProbes += 1;
+        if (postTermProbes === 1) throw Object.assign(new Error(), { code: "EPERM" });
+        child.exitCode = 0;
+        throw Object.assign(new Error(), { code: "ESRCH" });
+      }
+      return true;
+    });
+    const pending = (await controller(child, { termGraceMs: 200, killConfirmMs: 10 })).terminate();
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(pending).resolves.toEqual({ forced: false, confirmed: true });
+    vi.useRealTimers();
+  });
+
+  it("does not escalate or confirm when EPERM persists after SIGTERM through the confirmation deadline", async () => {
+    platform("linux");
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const signals: Array<NodeJS.Signals | number | undefined> = [];
+    vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+      signals.push(signal as NodeJS.Signals | number | undefined);
+      if (signal === "SIGKILL") throw new Error("must not escalate on persistent unknown");
+      if (signal === "SIGTERM") return true;
+      if (!signals.includes("SIGTERM")) return true;
+      throw Object.assign(new Error(), { code: "EPERM" });
+    });
+    const pending = (await controller(child, { termGraceMs: 80, killConfirmMs: 10 })).terminate();
+    await vi.advanceTimersByTimeAsync(80);
+    await expect(pending).resolves.toMatchObject({
+      forced: false,
+      confirmed: false,
+      reason: "Cannot confirm whether the worker process group exited after SIGTERM",
+    });
+    expect(signals).not.toContain("SIGKILL");
+    expect(child.exitCode).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("retries a transient unknown after SIGKILL and confirms only after disappearance plus direct-child exit", async () => {
+    platform("linux");
+    vi.useFakeTimers();
+    const child = fakeChild();
+    let signaledKill = false;
+    let postKillProbes = 0;
+    vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+      if (signal === "SIGTERM") return true;
+      if (signal === "SIGKILL") {
+        signaledKill = true;
+        return true;
+      }
+      if (signal === 0) {
+        if (!signaledKill) return true;
+        postKillProbes += 1;
+        if (postKillProbes === 1) throw Object.assign(new Error(), { code: "EPERM" });
+        child.exitCode = 0;
+        throw Object.assign(new Error(), { code: "ESRCH" });
+      }
+      return true;
+    });
+    const pending = (await controller(child, { termGraceMs: 5, killConfirmMs: 200 })).terminate();
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(pending).resolves.toEqual({ forced: true, confirmed: true });
+    vi.useRealTimers();
   });
 
   it("does not confirm POSIX cleanup when the group remains after SIGKILL", async () => {

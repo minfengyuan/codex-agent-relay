@@ -42,6 +42,7 @@ describe("append-codex-agent-relay-instructions", () => {
     expect(first).toContain("`grok_delegate`");
     expect(first).toContain("`cursor_delegate`");
     expect(first).toContain("`opencode_delegate`");
+    expect(first).toContain("`dsh_delegate`");
     expect(first).toContain("PERMISSION_REQUIRED");
     expect(first).toContain("allow_once");
     expect(first).toContain(startMarker);

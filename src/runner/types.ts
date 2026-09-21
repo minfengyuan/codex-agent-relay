@@ -4,7 +4,7 @@ import type { SessionRecord } from "../store.js";
 
 export type ProgressReporter = (message: string) => Promise<void> | void;
 
-export type Provider = "grok" | "cursor" | "opencode";
+export type Provider = "grok" | "cursor" | "opencode" | "dsh";
 export type ExistingSessionAction = "resume" | "load";
 
 export type ToolCallUpdate = {
@@ -32,6 +32,7 @@ export type PermissionRuntime<R extends RelayResult> = {
 };
 
 export type SessionExtras = {
+  agentCapabilities: acp.AgentCapabilities | null | undefined;
   configOptions: readonly acp.SessionConfigOption[] | null | undefined;
   modes: acp.SessionModeState | null | undefined;
   metadata: Pick<SessionRecord, "model" | "mode">;
@@ -46,8 +47,10 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
   capabilities: acp.ClientCapabilities;
   prompt(task: string): string;
   sessionMetadata(input: I, record?: SessionRecord): Pick<SessionRecord, "model" | "mode">;
+  persistNewSessionBeforeConfigure?: boolean;
   spawnEnv?(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   existingSession?(initialized: acp.InitializeResponse, input: I): ExistingSessionAction;
+  validateInitialized?(initialized: acp.InitializeResponse): void;
   validateInput?(input: I): void;
   createSummarizer(limitBytes: number): ProviderSummarizer<R>;
   handlePermission(params: acp.RequestPermissionRequest, rt: PermissionRuntime<R>): acp.RequestPermissionResponse;
@@ -58,5 +61,9 @@ export type ProviderAdapter<I extends DelegateInput, R extends RelayResult> = {
     input: I,
     extras: SessionExtras,
     signal?: AbortSignal,
+  ): Promise<void>;
+  finalizeSession?(
+    ctx: acp.ClientContext,
+    sessionId: string,
   ): Promise<void>;
 };

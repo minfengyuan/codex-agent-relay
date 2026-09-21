@@ -44,6 +44,22 @@ describe("GrokRunner", () => {
     expect(events).toContain("delegated:1");
   });
 
+  it("exposes only session IDs backed by relay records", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const store = new SessionStore(state);
+    const writeNew = vi.spyOn(store, "writeNew").mockRejectedValueOnce(new RelayFailure("STATE_IO", "injected write failure"));
+    await expect(new GrokRunner(config(state), store).delegate({ task: "new", cwd }))
+      .rejects.toMatchObject({ code: "STATE_IO", partial: { sessionId: null } });
+
+    writeNew.mockRestore();
+    await store.writeNew("saved-session", cwd);
+    vi.stubEnv("FAKE_ACP_MODE", "load-fail");
+    await expect(new GrokRunner(config(state), store).delegate({ task: "existing", cwd, sessionId: "saved-session" }))
+      .rejects.toMatchObject({ code: "ACP_FAILURE", partial: { sessionId: "saved-session" } });
+  });
+
   it("rejects nested delegation and ignores the old loop-guard key", async () => {
     vi.stubEnv("XAI_API_KEY", "");
     const state = await tempDir();
@@ -147,6 +163,24 @@ describe("GrokRunner", () => {
     const lease = await new SessionStore(state).acquire(cwd);
     await lease.markReaped("no-worker-created");
     await lease.release();
+  });
+
+  it("preserves cancellation grace before terminating providers without a finalizer", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    vi.stubEnv("FAKE_ACP_MODE", "hang-cancel-grace");
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const log = join(state, "cancel-grace.log");
+    vi.stubEnv("FAKE_ACP_LOG", log);
+    const controller = new AbortController();
+    const pending = new GrokRunner(config(state, { cancelGraceMs: 400 }), new SessionStore(state))
+      .delegate({ task: "hang", cwd }, controller.signal);
+    await waitForLog(log, "prompt:fake-session-1");
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "CANCELLED" });
+    const events = await readFile(log, "utf8");
+    expect(events).toContain("cancel:fake-session-1");
+    expect(events).toContain("cancel-grace-complete:fake-session-1");
   });
 
   it("bounds cancellation when the ACP stdin write queue is backpressured", async () => {

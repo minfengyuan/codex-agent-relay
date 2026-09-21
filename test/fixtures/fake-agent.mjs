@@ -150,7 +150,7 @@ if (mode === "malformed") {
           });
         }
       }
-      if (mode === "hang") {
+      if (mode === "hang" || mode === "hang-cancel-grace") {
         while (!cancelled) await new Promise((resolve) => setTimeout(resolve, 10));
         return { stopReason: "cancelled" };
       }
@@ -169,6 +169,9 @@ if (mode === "malformed") {
     })
     .onNotification(acp.methods.agent.session.cancel, (ctx) => {
       log(`cancel:${ctx.params.sessionId}`);
+      if (mode === "hang-cancel-grace") {
+        setTimeout(() => log(`cancel-grace-complete:${ctx.params.sessionId}`), 150);
+      }
       cancelled = true;
     })
     .connect(acp.ndJsonStream(

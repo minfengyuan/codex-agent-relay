@@ -143,9 +143,8 @@ async function waitForPosixExit(
   const deadline = Date.now() + timeoutMs;
   while (true) {
     const probe = probePosixGroup(group);
-    if (probe === "unknown") return "unknown";
     if (probe === "gone" && exited(child)) return "confirmed";
-    if (Date.now() >= deadline) return probe === "gone" ? "alive" : probe;
+    if (Date.now() >= deadline) return probe === "unknown" ? "unknown" : probe === "gone" ? "alive" : probe;
     await delay(Math.min(25, Math.max(1, deadline - Date.now())));
   }
 }

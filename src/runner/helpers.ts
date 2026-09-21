@@ -26,3 +26,30 @@ export function hasResumeCapability(capabilities: unknown): boolean {
   }).sessionCapabilities?.resume;
   return resume !== undefined && resume !== null;
 }
+
+export function hasCloseCapability(capabilities: unknown): boolean {
+  if (!capabilities || typeof capabilities !== "object") return false;
+  const close = (capabilities as {
+    sessionCapabilities?: { close?: unknown } | null;
+  }).sessionCapabilities?.close;
+  return close !== undefined && close !== null;
+}
+
+export function configSelectValues(option: acp.SessionConfigOption): string[] {
+  if (option.type !== "select") return [];
+  const values: string[] = [];
+  for (const entry of option.options) {
+    if ("value" in entry && typeof entry.value === "string") {
+      values.push(entry.value);
+      continue;
+    }
+    if ("options" in entry && Array.isArray(entry.options)) {
+      for (const inner of entry.options) {
+        if (inner && typeof inner === "object" && "value" in inner && typeof inner.value === "string") {
+          values.push(inner.value);
+        }
+      }
+    }
+  }
+  return values;
+}

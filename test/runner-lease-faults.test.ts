@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ProcessTree from "../src/runner/process-tree.js";
 import { SessionStore, type WorkspaceLease } from "../src/store.js";
 import { RelayFailure } from "../src/types.js";
 import { GrokRunner, cleanupAllChildren } from "../src/runner.js";
-import { baseConfig, cleanupDirs, tempDir, waitForLog } from "./helpers.js";
+import { baseConfig, cleanupDirs, clearDelegatedEnv, tempDir, waitForLog } from "./helpers.js";
 
 const state = vi.hoisted(() => ({
   children: [] as ChildProcessWithoutNullStreams[],
@@ -34,6 +34,10 @@ vi.mock("../src/runner/process-tree.js", async (original) => {
   } };
 });
 const dirs: string[] = [];
+
+beforeEach(() => {
+  clearDelegatedEnv();
+});
 vi.setConfig({ testTimeout: 15_000 });
 afterEach(async () => {
   const cleanupFailure = await cleanupAllChildren().then(() => undefined, (error: unknown) => error);

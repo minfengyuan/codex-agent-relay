@@ -43,7 +43,7 @@ Real-agent smoke tests are opt-in because they require local CLIs/authentication
 - `src/server.ts` — MCP schemas, tool registration, input validation, structured error/result mapping.
 - `src/runner/acp-runner.ts` — ACP handshake, session create/load/resume, prompt execution, progress, cancellation, timeouts, and child cleanup.
 - `src/runner/` — shared limits, summaries, helpers, and adapter contracts.
-- `src/adapters/` — Grok, Cursor, and OpenCode-specific command/auth/session/permission behavior.
+- `src/adapters/` — Grok, Cursor, OpenCode, and DSH-specific command/auth/session/permission behavior.
 - `src/store.ts` — session records plus per-`cwd` lock files.
 - `src/config.ts` — environment-backed runtime configuration.
 - `test/` — hermetic runner/server/store tests, fake ACP agents, and opt-in real smoke tests.
