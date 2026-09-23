@@ -395,16 +395,17 @@ export class AcpRunner<I extends DelegateInput, R extends RelayResult> {
             );
           }
           if (this.adapter.finalizeSession) {
-            try {
-              await finalizeActiveSession();
-            } finally {
-              // Start tree cleanup while the ACP connection still keeps the worker root alive.
-              // This is required on Windows, where a root that exits before taskkill starts
-              // cannot provide proof that its descendants were also removed.
-              void terminateProcess();
-            }
+            await finalizeActiveSession();
           }
           if (record) await this.store.touch(record);
+          if (this.adapter.finalizeSession && processTree?.reference()?.kind === "windows-process-tree") {
+            // Start tree cleanup while the ACP connection still keeps the worker root alive.
+            // This is required on Windows, where a root that exits before taskkill starts
+            // cannot provide proof that its descendants were also removed.
+            // Do not await here: POSIX waits for connectWith to settle, then the outer
+            // finally terminates the process group.
+            void terminateProcess();
+          }
           return response.stopReason;
         } catch (error) {
           const reason = totalAbort.signal.aborted && totalAbort.signal.reason instanceof RelayFailure

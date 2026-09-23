@@ -197,6 +197,52 @@ describe("DshRunner", () => {
     expect(events.match(/close-start:fake-session-1/g)).toHaveLength(2);
   });
 
+  it.skipIf(process.platform === "win32")("does not send POSIX process-group SIGTERM before resumed-session touch settles", async () => {
+    const state = await tempDir();
+    const cwd = await tempDir();
+    const store = new SessionStore(state, "dsh");
+    const created = await new DshRunner(config(state), store).delegate({ task: "one", cwd });
+
+    let releaseTouch = (): void => {};
+    let markEntered = (): void => {};
+    const enteredTouch = new Promise<void>((resolve) => { markEntered = resolve; });
+    const touchGate = new Promise<void>((resolve) => { releaseTouch = resolve; });
+    const originalTouch = store.touch.bind(store);
+    const touchSpy = vi.spyOn(store, "touch").mockImplementation(async (record) => {
+      markEntered();
+      await touchGate;
+      return originalTouch(record);
+    });
+    const originalKill = process.kill.bind(process);
+    const kills: Array<{ pid: number; signal: NodeJS.Signals | number | undefined }> = [];
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal?) => {
+      const typedSignal = signal as NodeJS.Signals | number | undefined;
+      kills.push({ pid, signal: typedSignal });
+      return originalKill(pid, typedSignal);
+    });
+    try {
+      const pending = new DshRunner(config(state), store).delegate({
+        task: "two",
+        cwd,
+        sessionId: created.sessionId as string,
+      });
+      void pending.catch(() => undefined);
+      await enteredTouch;
+      expect(kills.some((call) => call.pid < 0 && call.signal === "SIGTERM")).toBe(false);
+      releaseTouch();
+      const resumed = await pending;
+      expect(resumed).toMatchObject({ sessionId: created.sessionId, stopReason: "end_turn" });
+      expect(kills.some((call) => call.pid < 0 && call.signal === "SIGTERM")).toBe(true);
+      const lease = await store.acquire(cwd);
+      await lease.markReaped("no-worker-created");
+      await lease.release();
+    } finally {
+      releaseTouch();
+      touchSpy.mockRestore();
+      killSpy.mockRestore();
+    }
+  });
+
   it("requires session close capability before creating or resuming a session", async () => {
     vi.stubEnv("FAKE_ACP_MODE", "no-close");
     const state = await tempDir();
@@ -623,9 +669,20 @@ describe("DshRunner", () => {
       task: "repeat",
       cwd,
     })).rejects.toMatchObject({ code: "PERMISSION_REQUIRED" });
-    expect(await readFile(repeatLog, "utf8")).toContain(
-      'permission-repeat-response:{"outcome":{"outcome":"cancelled"}}',
+    const repeatEvents = await readFile(repeatLog, "utf8");
+    expect(repeatEvents).toContain(
+      'permission-response:{"outcome":{"outcome":"selected","optionId":"reject-actual"}}',
     );
+    expect(repeatEvents).toContain("permission-repeat-request");
+    expect(repeatEvents).not.toContain("allow-once-actual");
+    expect(repeatEvents).not.toContain("always-actual");
+    expect(repeatEvents.indexOf("cancel:repeat-session")).toBeLessThan(repeatEvents.indexOf("close-start:repeat-session"));
+    expect(repeatEvents).toContain("close-complete:repeat-session");
+    const repeatResponse = repeatEvents.split("\n").find((line) => line.startsWith("permission-repeat-response:"));
+    if (repeatResponse) {
+      expect(repeatResponse).toContain('"outcome":"cancelled"');
+      expect(repeatResponse).not.toContain('"outcome":"selected"');
+    }
   });
 
   it("cancels a late permission request after caller abort", async () => {
@@ -647,11 +704,17 @@ describe("DshRunner", () => {
       message: "MCP request was cancelled",
     });
     const events = await readFile(log, "utf8");
+    expect(events).toContain("permission-late-request");
     expect(events).toContain("cancel:fake-session-1");
     expect(events.indexOf("cancel:fake-session-1")).toBeLessThan(events.indexOf("close-start:fake-session-1"));
     expect(events).toContain("close-complete:fake-session-1");
-    expect(events).toContain('permission-response:{"outcome":{"outcome":"cancelled"}}');
     expect(events).not.toContain('"outcome":"selected"');
+    expect(events).not.toContain("allow-once-actual");
+    expect(events).not.toContain("always-actual");
+    const lateResponse = events.split("\n").find((line) => line.startsWith("permission-response:"));
+    if (lateResponse) {
+      expect(lateResponse).toContain('"outcome":"cancelled"');
+    }
     const lease = await store.acquire(cwd);
     await lease.markReaped("no-worker-created");
     await lease.release();
