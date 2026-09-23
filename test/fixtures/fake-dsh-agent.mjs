@@ -119,6 +119,7 @@ if (mode === "malformed") {
         });
         log(`permission-response:${JSON.stringify(outcome)}`);
         if (mode === "permission-repeat") {
+          log("permission-repeat-request");
           const second = await ctx.client.request(acp.methods.client.session.requestPermission, {
             sessionId: ctx.params.sessionId,
             toolCall: { toolCallId: "t2", title: "Again", status: "pending", content: [] },
@@ -223,6 +224,7 @@ if (mode === "malformed") {
       log(`cancel:${ctx.params.sessionId}`);
       cancelled = true;
       if (mode === "permission-after-cancel") {
+        log("permission-late-request");
         const outcome = await ctx.client.request(acp.methods.client.session.requestPermission, {
           sessionId: ctx.params.sessionId,
           toolCall: { toolCallId: "late", title: "Late", status: "pending", content: [] },
